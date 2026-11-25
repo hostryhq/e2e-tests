@@ -4,6 +4,7 @@ import { compareDigests, deviceDigest } from "./digest";
 import type { Facts } from "./day";
 import type { Dev, SoakNet } from "./net";
 import { psql, type Svc } from "./svc";
+import { FEATURE } from "../../../../app-restaurant/src/domain/entitlements";
 
 export type Claim = { id: string; name: string; status: "pass" | "fail" | "not_run"; evidence: string[]; failures: string[] };
 
@@ -25,6 +26,7 @@ export type Inputs = {
   /** Per-service digest differences measured before the cloud rollback, when the run did one. */
   digestPre?: { orders: string[]; billing: string[] } | undefined;
   restore?: R | undefined;
+  t10?: import("./t10").T10State | undefined;
 };
 
 function mk(id: string, name: string): { c: Claim; ok(cond: boolean, pass: string, fail: string): void; note(s: string): void } {
@@ -437,7 +439,50 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
   }
 
   // ---- T10 ----
-  const t10: Claim = { id: "T10", name: "Trading is never gated", status: "not_run", evidence: [], failures: ["not exercisable on this build: app-restaurant has no entitlement snapshot or subscription check (grep: none); the nearest condition, an expired offline pack, only refuses new PIN sign-ins in StubIdentity and was not run"] };
+  const t10 = (() => {
+    const t = mk("T10", "Trading is never gated");
+    const st = i.t10;
+    if (!st) {
+      t.c.status = "not_run";
+      t.c.failures.push("the run did not drive the entitlement scenario");
+      return t.c;
+    }
+    if (st.error) t.ok(false, "", `the scenario did not complete: ${st.error}`);
+    const names = [...net.devs.keys()];
+    const first = names[0]!;
+    const morning = names.map((n) => st.morning[n]);
+    t.ok(morning.length > 0 && morning.every((m) => m && (m.v ?? 0) >= 1 && m.status === "active" && m.kds && m.captain),
+      `all ${names.length} devices held the pack's snapshot from the morning (v ${[...new Set(morning.map((m) => m?.v))].join("/")}, plan ${morning[0]?.plan}, active, restaurant.kds and restaurant.captain granted)`,
+      `a device lacked the morning snapshot: ${JSON.stringify(st.morning).slice(0, 300)}`);
+    // Billing state never gates: overdue at the vendor the whole day, and every trading step of the day went through.
+    t.ok(st.overdueAtOnboarding, "the subscription was overdue (a charge for a long-past period was open) for the whole trading day", "the subscription was not overdue: the billing-state half of the claim was not exercised");
+    const failed = f.steps.filter((s) => !s.ok);
+    t.ok(failed.length === 0 && f.steps.length > 50, `all ${f.steps.length} steps of the trading day succeeded on devices that held an overdue subscription and a kitchen-screen plan; ${Object.values(f.billsMadeBy).reduce((a, b) => a + b, 0)} bills made`, `${failed.length} of ${f.steps.length} steps failed: ${failed.slice(0, 2).map((s) => s.name + " " + s.error).join("; ")}`);
+    // Plan change mid-day: the vendor side moved, the offline devices did not.
+    const mid = st.mid;
+    t.ok(!!mid && /^soak_lite /.test(mid.vendorChange), `mid-day, internet cut: the vendor changed the plan to one without restaurant.kds (${mid?.vendorChange}); the subscription was still overdue`, `the mid-day plan change did not happen (${mid?.vendorChange ?? "no record"})`);
+    t.ok(!!mid && names.every((n) => eq(mid.heldWhileOffline[n], st.morning[n])), "while offline no device changed what it held (same version, features and status as the morning)", "a device changed its snapshot without a pack refresh");
+    const rc = st.reconnect;
+    if (!rc) t.ok(false, "", "the reconnect refresh did not run");
+    else {
+      const refreshed = names.every((n) => rc.refresh[n]?.fetched === 200 && rc.refresh[n]?.adopted === true && (rc.refresh[n]?.after.v ?? 0) > (rc.refresh[n]?.before.v ?? 99));
+      t.ok(refreshed, `on the pack refresh every device adopted the higher snapshot (v${st.morning[first]?.v} to v${rc.refresh[first]?.after.v})`, `a device did not adopt the higher snapshot: ${JSON.stringify(Object.fromEntries(names.map((n) => [n, { f: rc.refresh[n]?.fetched, a: rc.refresh[n]?.adopted, v: rc.refresh[n]?.after.v }]))).slice(0, 400)}`);
+      t.ok(names.every((n) => rc.refresh[n]?.after.kds === false && rc.refresh[n]?.after.captain === true && rc.refresh[n]?.after.status === "active"), "after adoption restaurant.kds is off and restaurant.captain stays on, on every device", "the adopted snapshot is not the lite plan's");
+      t.ok(names.every((n) => rc.stale[n]?.adopted === false && rc.stale[n]?.v === rc.refresh[n]?.after.v), "an old pack (the morning's version) offered again does not lower the version", "a stale pack lowered or replaced the snapshot");
+      t.ok(rc.malformedAdopted === false, "a malformed snapshot is ignored", "a malformed snapshot was adopted");
+      const kitchens = ["K9K", "K8K"].map((n) => rc.offlineAfterAdopt[n]);
+      t.ok(kitchens.every((k) => k && k.kds === false), "with the internet cut again both kitchen screens find restaurant.kds absent from the held snapshot: kitchen mode is unavailable offline for a plan without it", "a kitchen screen still offers kitchen mode on a plan without restaurant.kds");
+    }
+    const sd = st.standing;
+    if (!sd) t.ok(false, "", "the standing check did not run");
+    else {
+      t.ok(sd.dayInProgress.startNew === true && sd.dayInProgress.ending === true, "synthetic status suspended, day in progress: trading goes on and the day is marked as the last (ADR-0014 A1.2)", "a suspended status stopped trading while a day was in progress");
+      t.ok(sd.daysOpenAtEnd.length === 0 && sd.afterTheDay.startNew === false && sd.closedAfterTheDay.startNew === false, "synthetic status suspended or closed, the real day closed: no new trading starts after the day", `suspension did not apply after the day (open days ${sd.daysOpenAtEnd.join(",")}, suspended ${sd.afterTheDay.startNew}, closed ${sd.closedAfterTheDay.startNew})`);
+      t.ok(sd.absentSnapshot.startNew === true, "no snapshot at all: trading continues", "an absent snapshot stopped trading");
+    }
+    t.note("suspension and closure statuses are synthetic: the vendor suspension needs an approval and is refused while a day is open (admin suspendOrganisation), so the status was set on the adopted snapshot and the app's own tradingStanding decided against the device's real day rows");
+    return t.c;
+  })();
 
   // ---- T11 business day ----
   {

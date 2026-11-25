@@ -38,7 +38,7 @@ export type Facts = {
   kitchenPre: { kots: number; kotLines: number; byStation: Record<string, { missing: string[]; duplicateLines: number }> } | undefined;
 };
 
-export type DayOpts = { seed: number; mode: "settle" | "print"; tables: number; counterSales: number; restoreEpoch: boolean; clock: Clock };
+export type DayOpts = { t10?: { morning(): void; mid(): Promise<void> }; seed: number; mode: "settle" | "print"; tables: number; counterSales: number; restoreEpoch: boolean; clock: Clock };
 
 /** IST calendar date of a virtual instant. */
 export const istDate = (ms: number): string => new Date(ms + 5.5 * 3_600_000).toISOString().slice(0, 10);
@@ -100,6 +100,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   const caps = [await net.add("B3K"), await net.add("B4K"), await net.add("B5K", { offsetMs: 7 * 60_000 })]; // B5K's clock runs seven minutes fast
   const kitchen = await net.add("K9K");
   const bar = await net.add("K8K");
+  o.t10?.morning();
   log("cast up: 3 counters, 3 captains, 2 KDS, one hub; morning: internet up for the configuration push");
   await net.setInternet(true);
   f.config = await publishConfig(net, a07, o.mode);
@@ -221,6 +222,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   // --- Counter: approvals (discount over limit, comp, cancel after KOT), settle, mixed and partial tender, reprint. ---
   const counters = [a07, a08];
   const settledBills: Array<{ billId: string; number: string; dev: Dev }> = [];
+  await step("T10: vendor changes the plan mid-day (devices offline)", async () => o.t10?.mid());
   await step("settle table checks", async () => {
     await net.sync();
     for (const [i, t] of tableChecks.entries()) {

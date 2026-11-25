@@ -8,19 +8,30 @@ export class Svc {
   ) {}
 
   /** Owner sign-in through the real identity service (OTP via the dev capture aid); access tokens live 15 minutes. */
+  private loggedAt = 0;
   async login(): Promise<void> {
+    if (this.token && Date.now() - this.loggedAt < 600_000) return; // one sign-in serves the run: identity limits sign-ins, tokens live 15 minutes
     const bin = process.env.SOAK_ONBOARD_BIN ?? "/tmp/hostry-soak/soak-onboard";
     const wrap = process.env.SOAK_ENV_WRAPPER ?? "";
     for (let i = 0; i < 6; i++) {
       try {
         this.token = (wrap ? execFileSync(wrap, [bin, "-login-only", "-mobile", this.o.mobile]) : execFileSync(bin, ["-login-only", "-mobile", this.o.mobile])).toString().trim();
-        if (this.token.length > 100) return;
+        if (this.token.length > 100) {
+          this.loggedAt = Date.now();
+          return;
+        }
       } catch {
         /* rate limited: wait and retry */
       }
       await new Promise((r) => setTimeout(r, 15_000));
     }
     throw new Error("owner sign-in failed");
+  }
+
+  /** GET on the real identity service as the owner (a device's latest offline pack). */
+  async identity(path: string): Promise<{ status: number; json: any }> {
+    const r = await fetch(`${process.env.SOAK_IDENTITY_URL}${path}`, { headers: { authorization: `Bearer ${this.token}` } });
+    return { status: r.status, json: await r.json().catch(() => ({})) };
   }
 
   async get(service: "billing" | "orders", path: string): Promise<{ status: number; json: any }> {

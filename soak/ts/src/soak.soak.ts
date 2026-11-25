@@ -5,6 +5,7 @@ import { cloudRestore } from "./restore";
 import { runDay } from "./day";
 import { Clock, SoakNet, loadFixture } from "./net";
 import { Svc, psql } from "./svc";
+import { newT10, t10Mid, t10Morning, t10Reconnect } from "./t10";
 
 const seed = Number(process.env.SOAK_SEED ?? "1");
 const mode = (process.env.SOAK_MODE ?? "settle") as "settle" | "print";
@@ -13,7 +14,7 @@ const out = process.env.SOAK_OUT ?? `/tmp/hostry-soak/run-${seed}-${mode}`;
 describe(`trading-day soak, seed ${seed}, number_at=${mode}`, () => {
   it("runs the day, reconnects, and checks claims T1 to T13", async () => {
     const fx = loadFixture();
-    const onboard = JSON.parse(readFileSync(process.env.SOAK_ONBOARD ?? "", "utf8")) as { owner_mobile: string };
+    const onboard = JSON.parse(readFileSync(process.env.SOAK_ONBOARD ?? "", "utf8")) as { owner_mobile: string; subscription_overdue?: boolean };
     // The virtual trading day starts NOW (wall clock) and runs forward from there. The real gateway stamps cloud-origin ops with its own
     // clock, and a device holds a last-writer-wins op stamped more than MAX_FUTURE_MS ahead of its clock in clock quarantine (S5): with the
     // devices a day behind, the outlet's tax profile and numbering settings never applied. The day (up to ~9 virtual hours) must stay
@@ -26,7 +27,8 @@ describe(`trading-day soak, seed ${seed}, number_at=${mode}`, () => {
     const net = await SoakNet.create(fx, clock);
     const svc = new Svc({ billing: process.env.SOAK_BILLING_URL!, orders: process.env.SOAK_ORDERS_URL!, outlet: fx.outlet_id, mobile: onboard.owner_mobile });
     const t0 = Date.now();
-    const facts = await runDay(net, { seed, mode, tables: Number(process.env.SOAK_TABLES ?? "10"), counterSales: Number(process.env.SOAK_SALES ?? "20"), restoreEpoch: process.env.SOAK_EPOCH === "1", clock });
+    const st10 = newT10(onboard.subscription_overdue === true);
+    const facts = await runDay(net, { t10: { morning: () => t10Morning(net, st10), mid: () => t10Mid(net, svc, st10, fx.tenant_id) }, seed, mode, tables: Number(process.env.SOAK_TABLES ?? "10"), counterSales: Number(process.env.SOAK_SALES ?? "20"), restoreEpoch: process.env.SOAK_EPOCH === "1", clock });
     const dayWall = Date.now() - t0;
 
     // Reconnect: the internet returns and the isolated device and the partitioned counters rejoin.
@@ -50,6 +52,8 @@ describe(`trading-day soak, seed ${seed}, number_at=${mode}`, () => {
     await new Promise((r) => setTimeout(r, 4000)); // the emit worker drains after the seal
     const rounds2 = await net.settle(120);
 
+    await t10Reconnect(net, svc, st10, clock.now());
+    await net.settle(120);
     let digestPre: { orders: string[]; billing: string[] } | undefined;
     let restore: Record<string, unknown> | undefined;
     if (facts.restoreEpoch) {
@@ -58,7 +62,7 @@ describe(`trading-day soak, seed ${seed}, number_at=${mode}`, () => {
       restore = await cloudRestore(net, fx.tenant_id, seed);
       await new Promise((r) => setTimeout(r, 8000)); // the re-offered ops reach the services again
     }
-    const inputs = { net, facts, svc, date, tenant: fx.tenant_id, outlet: fx.outlet_id, convergedRounds: rounds, convergedWallMs, digestPre, restore };
+    const inputs = { t10: st10, net, facts, svc, date, tenant: fx.tenant_id, outlet: fx.outlet_id, convergedRounds: rounds, convergedWallMs, digestPre, restore };
     const { claims, extra } = await evaluate(inputs);
     claims.push(await duplicatesClaim(inputs));
     claims.push(await restoreClaim(inputs));

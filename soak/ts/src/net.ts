@@ -5,6 +5,7 @@ import { HttpTransport, KeyRing, SoftwareSigner, TransportError, bearerAuth, lan
 import { OUTLET_STREAM, createRuntime, openDeviceSession, type Runtime, type RuntimeOptions } from "../../../../app-restaurant/src/runtime";
 import type { ApprovalProofInput, DevicePack, PinProver, SessionProofInput } from "../../../../app-restaurant/src/data/auth/pack";
 import { ensureDayOpen } from "../../../../app-restaurant/src/data/trading/orders";
+import { parseEntitlements } from "../../../../app-restaurant/src/domain/entitlements";
 
 export type FxSeries = { id: string; code: string; doc_type: string; status: string };
 export type FxDevice = { device_id: string; kind: "pos" | "waiter" | "kds"; name: string; kid: string; pub: string; pkcs8: string; cred: CredentialEnvelope; series: FxSeries[]; pack: Record<string, any> };
@@ -83,6 +84,8 @@ export function packOf(fx: Fixture, d: FxDevice): DevicePack {
     series: grants,
     members: (c.members as any[]).map((m) => ({ memberId: m.member_id, displayName: m.display_name, role: roleOf.get(m.member_id) ?? "member", perms: m.permissions, pinV: m.pin_v ?? 1 })),
     manualBooks: ((c.manual_books as any[]) ?? []).map((b) => b.code),
+    // The signed `entitlements` claim as identity put it in the pack (ADR-0014 T10); absent or malformed means none, trading continues.
+    ...(parseEntitlements(c.entitlements) ? { entitlements: parseEntitlements(c.entitlements)! } : {}),
   };
 }
 

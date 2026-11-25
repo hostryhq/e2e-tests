@@ -129,6 +129,8 @@ func main() {
 	vstate := flag.String("vendor-state", "vendor-state.json", "vendor bootstrap credentials (created on first use)")
 	recoverEmail := flag.String("recover-email", "", "recover this existing platform_admin when the vendor state file is missing")
 	mobile := flag.String("mobile", "", "owner mobile (+91...)")
+	changePlan := flag.String("change-plan", "", "vendor action: change the subscription of -org to this plan key (version 1), effective today (IST), and print the result")
+	orgFlag := flag.String("org", "", "organisation id for -change-plan")
 	loginOnly := flag.Bool("login-only", false, "sign the owner of -mobile in again (access tokens live 15 minutes) and print the access token")
 	flag.Parse()
 	idURL, tnURL, adURL, origin := env("SOAK_IDENTITY_URL"), env("SOAK_TENANCY_URL"), env("SOAK_ADMIN_URL"), env("SOAK_ADMIN_ORIGIN")
@@ -192,6 +194,13 @@ func main() {
 		return ac.Do(method, path, body, "Cookie", "__Host-hostry-admin="+cookie, "X-CSRF-Token", csrf, "Origin", origin, "Idempotency-Key", hx.NewID())
 	}
 
+	if *changePlan != "" {
+		today := time.Now().In(time.FixedZone("IST", 19800)).Format("2006-01-02")
+		cr := must(mut("PUT", "/v1/organisations/"+*orgFlag+"/subscription", map[string]any{"plan_key": *changePlan, "plan_version": 1, "cycle": "monthly", "effective_from": today}), "changeSubscription", 200, 201)
+		fmt.Printf("%s\n", cr.Body)
+		return
+	}
+
 	pb := make([]byte, 5)
 	_, _ = rand.Read(pb)
 	pan := ""
@@ -230,6 +239,30 @@ func main() {
 	tc := hx.New(tnURL).With("Authorization", "Bearer "+access)
 
 	must(mut("PUT", "/v1/organisations/"+orgID+"/tax-registrations/"+regID+"/verification", map[string]any{"method": "certificate_seen", "note": "Certificate seen (soak)."}), "verifyTaxRegistration", 200)
+
+	// Commercial setup (ADR-0008, ADR-0014 T10): two plans as data, the organisation on the plan that has the kitchen screen, with a
+	// charge raised for a period long past so the subscription reads overdue. Overdue is a label: it gates nothing (the soak proves it).
+	// "soak_full" grants restaurant.kds; "soak_lite" does not. A plan may already exist when a stack is reused: 409 is accepted.
+	price := []map[string]any{{"cycle": "monthly", "list_price": map[string]any{"amount_paise": 99900, "currency": "INR"}}}
+	for _, pl := range []struct {
+		key  string
+		feat []string
+	}{{"soak_full", []string{"restaurant.captain", "restaurant.kds", "restaurant.reports.core"}}, {"soak_lite", []string{"restaurant.captain", "restaurant.reports.core"}}} {
+		must(mut("POST", "/v1/plans", map[string]any{"key": pl.key, "name_key": "plan." + pl.key, "version": map[string]any{"feature_keys": pl.feat, "included_outlets": 1, "prices": price}}), "createPlan "+pl.key, 201, 409)
+		must(mut("POST", "/v1/plans/"+pl.key+"/versions/1/activation", nil), "activatePlanVersion "+pl.key, 200, 409)
+	}
+	ist := time.FixedZone("IST", 19800)
+	started := time.Now().In(ist).AddDate(0, 0, -60)
+	must(mut("POST", "/v1/organisations/"+orgID+"/subscription", map[string]any{"plan_key": "soak_full", "plan_version": 1, "cycle": "monthly", "start_date": started.Format("2006-01-02")}), "startSubscription", 201)
+	// The vendor's own tax configuration is data (BR-A1-12); a charge cannot be raised without one effective for its period.
+	must(mut("POST", "/v1/billing-configurations", map[string]any{"effective_from": started.Format("2006-01-02"), "hostry_state_code": "33", "sac": "997331", "gst_rate_bp": 1800, "gst_registered": true, "payment_tolerance_paise": 99, "payment_terms_days": 7}), "createBillingConfiguration", 201, 409)
+	must(mut("POST", "/v1/organisations/"+orgID+"/charges", map[string]any{"kind": "period", "period_start": started.Format("2006-01-02"), "period_end": started.AddDate(0, 1, -1).Format("2006-01-02")}), "raiseCharge", 201)
+	subRes := mut("GET", "/v1/organisations/"+orgID+"/subscription", nil)
+	fmt.Printf("subscription after the overdue charge: HTTP %d %s\n", subRes.Status, strings.TrimSpace(string(subRes.Body)[:min(len(subRes.Body), 400)]))
+	subOverdue := false
+	if cur, ok := subRes.Map()["current"].(map[string]any); ok {
+		subOverdue, _ = cur["overdue"].(bool)
+	}
 
 	// The paper bill book (entry-only series MB1) is registered with tenancy by the owner; best effort, the result is printed.
 	mb := tc.Post("/v1/manual-book-series", map[string]any{"tax_registration_id": regID, "code": "MB1", "outlet_ids": []string{outletID}}, "Idempotency-Key", hx.NewID())
@@ -353,7 +386,7 @@ func main() {
 	}
 
 	o := map[string]any{"tenant_id": orgID, "brand_id": brandID, "outlet_id": outletID, "registration_id": regID, "gstin": gst,
-		"owner_mobile": *mobile, "owner_access_token": access, "devices": devices, "staff": staff, "proof_keys": proofKeys, "document_series_raw": json.RawMessage(reg.Body)}
+		"owner_mobile": *mobile, "owner_access_token": access, "devices": devices, "staff": staff, "proof_keys": proofKeys, "subscription_overdue": subOverdue, "document_series_raw": json.RawMessage(reg.Body)}
 	raw, _ := json.MarshalIndent(o, "", "  ")
 	if err := os.WriteFile(*out, raw, 0o600); err != nil {
 		log.Fatal(err)
