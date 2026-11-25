@@ -207,6 +207,8 @@ export class SoakNet {
   readonly devs = new Map<string, Dev>();
   readonly ctl: Ctl;
   internet = false;
+  /** Set after a cloud restore: the hub re-offers its pii-bearing ops on every round for a day (see settle). */
+  piiResend = false;
   hubRounds: Array<{ pushed: number; pulled: number; refused: number; epoch_changed: boolean; refusals?: unknown[] }> = [];
   constructor(readonly fx: Fixture, readonly clock: Clock) {
     this.ring = new KeyRing(fx.identity_pub);
@@ -329,18 +331,22 @@ export class SoakNet {
   /** Repeat rounds until every vector, the hub's and the cloud's stops moving. */
   async settle(maxRounds = 60): Promise<number> {
     let last = "";
+    const trace: string[] = [];
     for (let i = 1; i <= maxRounds; i++) {
       this.clock.advance(5_000);
       await this.ctl.clock(this.clock.ms);
       const hr = this.internet ? await this.ctl.hubSync() : null;
       await this.sync();
       if (hr) this.hubRounds.push(hr);
-      const vs = await Promise.all([...this.devs.values()].filter((d) => d.powered).map((d) => d.rt.engine.vector()));
+      const vs = await Promise.all([...this.devs.values()].filter((d) => d.powered).map(async (d) => Object.entries(await d.rt.engine.vector()).sort()));
       const sig = JSON.stringify([vs, hr?.pushed ?? 0, hr?.pulled ?? 0]);
-      if (sig === last && (!hr || (hr.pushed === 0 && hr.pulled === 0))) return i;
+      trace.push(`round ${i}: hub ${hr ? `pushed ${hr.pushed} pulled ${hr.pulled} refused ${hr.refused}` : "no round"}; vectors ${last === "" || sig.split("]],")[0] !== last.split("]],")[0] ? "moved" : "same"}`);
+      // After a cloud restore the engine offers the pii-bearing ops again on EVERY round for a day (svc-sync engine ResendPII, ADR-0014 A3.1): the hub pushes
+      // them each time and the cloud already holds them, so `pushed` is not progress then; the vectors and what is pulled are.
+      if (sig === last && (!hr || (hr.pulled === 0 && (hr.pushed === 0 || this.piiResend)))) return i;
       last = sig;
     }
-    throw new Error(`settle: did not quiesce in ${maxRounds} rounds`);
+    throw new Error(`settle: did not quiesce in ${maxRounds} rounds; last rounds: ${trace.slice(-4).join(" | ")}`);
   }
 }
 

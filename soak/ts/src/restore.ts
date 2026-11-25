@@ -35,6 +35,7 @@ export async function cloudRestore(net: SoakNet, tenant: string, seed: number): 
   pg(["sh", "-c", "psql -U hostry -d sync -q < /tmp/soak-sync-backup.sql > /dev/null"]);
   ev.ops_after_restore = count();
   await net.ctl.epoch(`soak-restore-${seed}`);
+  net.piiResend = true;
   // The nodes meet the new epoch and re-offer what the restored cloud lost.
   let rounds = 0;
   const t0 = Date.now();

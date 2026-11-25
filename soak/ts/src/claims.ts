@@ -396,6 +396,18 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
       const texts = new Map<string, string>();
       const dev = deviceDigest(owner, date, rows, texts);
       const diff = compareDigests(dev, svcDigest);
+      if (owner === "orders" && dev.state_hash !== svcDigest.state_hash) {
+        // Diagnostic: the commitments the device holds for each `check` row, against what orders recorded for it.
+        for (const [k, v] of texts) {
+          if (!k.startsWith("check|") || !v.includes("~c:")) continue;
+          const id = k.split("|")[1]!;
+          const dj = JSON.parse(v) as R;
+          const devC = Object.entries(dj).filter(([x]) => x.startsWith("~c:")).map(([x, c]) => `${x}=${String(c).slice(0, 10)}`);
+          const rec = psql("orders", `select field, left(commitment,10), hlc, origin, seq, is_insert from pii_commitments where entity='check' and row_id='${id}' order by field, hlc`).map((r) => r.join("/"));
+          const proj = psql("orders", `select coalesce((meta->'pii_c')::text, 'null') from projection_rows where entity='check' and id='${id}'`).map((r) => r[0]);
+          t.note(`orders check ${id.slice(0, 8)}: device commitments [${devC.join(", ")}]; orders pii_commitments rows [${rec.join(" ; ")}]; projection pii_c ${JSON.stringify(proj)}`);
+        }
+      }
       if (owner === "billing" && dev.state_hash !== svcDigest.state_hash) {
         // Which rows differ, and how: the service's stored row texts against the device's (diagnostic only).
         const svcTexts = new Map(psql("billing", "select body#>>'{}' from docs where kind='digest_row'").map((r) => [r[0]!, true] as const));
