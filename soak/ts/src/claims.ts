@@ -111,9 +111,9 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
       const counts = new Map<string, number>();
       for (const h of hashes) counts.set(h[1], (counts.get(h[1]) ?? 0) + 1);
       const major = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]![0];
-      const ref = devs.find((d) => hashes.find((h) => h[0] === d.fx.name)![1] === major)!;
+      const ref = devs.find((d) => hashes.find((h) => h[0] === d.fx.name)?.[1] === major)!;
       for (const d of devs) {
-        if (hashes.find((h) => h[0] === d.fx.name)![1] === major) continue;
+        { const hh = hashes.find((h) => h[0] === d.fx.name); if (!hh || hh[1] === major) continue; }
         const diff: string[] = [];
         for (const e of names) {
           const [a, b] = [await sig(d, e), await sig(ref, e)];

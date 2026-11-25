@@ -99,12 +99,20 @@ export async function loadPack(fx: Fixture, d: FxDevice): Promise<DevicePack> {
   return loadVerifiedPack(view);
 }
 
+const WALL_LEAD_MS = 5 * 60_000;
+
 /** Deterministic virtual clock, pushed to the gateway and hub before every sync round (they read the same time). */
 export class Clock {
   constructor(public ms: number) {}
   now = (): number => this.ms;
+  /**
+   * The real hub, gateway and identity run on WALL time and cannot be set, and a device that talks to them corrects its clock to theirs
+   * and quarantines last-writer-wins ops stamped more than MAX_FUTURE_MS (10 min) ahead. The virtual day therefore may run at most
+   * WALL_LEAD_MS ahead of the wall clock: advances beyond that are cut (hours of the script collapse to the wall time that really passed;
+   * the hybrid clock's counter still orders the operations). Run 4 compressed hours freely because its hub took the virtual time.
+   */
   advance(ms: number): void {
-    this.ms += ms;
+    this.ms = Math.max(this.ms, Math.min(this.ms + ms, Date.now() + WALL_LEAD_MS));
   }
   minutes(n: number): void {
     this.advance(n * 60_000);
@@ -121,6 +129,15 @@ export class GatedTransport implements SyncTransport {
   refusals: Array<Record<string, unknown>> = [];
   holds: Array<Record<string, unknown>> = [];
   calls = { hello: 0, push: 0, pull: 0, refused: 0 };
+  /** What this link failed with (count by message), for the report: a LAN or cloud call that threw. */
+  errors = new Map<string, number>();
+  private note<T>(f: () => Promise<T>): Promise<T> {
+    return f().catch((e: unknown) => {
+      const m = e instanceof Error ? e.message.slice(0, 160) : String(e).slice(0, 160);
+      if (!/link down/.test(m)) this.errors.set(m, (this.errors.get(m) ?? 0) + 1);
+      throw e;
+    });
+  }
   constructor(
     private readonly inner: SyncTransport,
     private readonly link: Link,
@@ -135,12 +152,12 @@ export class GatedTransport implements SyncTransport {
   async hello(req: Parameters<SyncTransport["hello"]>[0]) {
     this.gate();
     this.calls.hello++;
-    return this.inner.hello(req);
+    return this.note(() => this.inner.hello(req));
   }
   async push(req: Parameters<SyncTransport["push"]>[0]) {
     this.gate();
     this.calls.push++;
-    const res = await this.inner.push(req);
+    const res = await this.note(() => this.inner.push(req));
     if (res.refused?.length) this.refusals.push(...res.refused.map((r) => ({ ...r, via: this.label })));
     if (res.held?.length) this.holds.push(...res.held.map((h) => ({ ...h, via: this.label })));
     const f = this.faults[0];
@@ -153,13 +170,15 @@ export class GatedTransport implements SyncTransport {
   async pull(req: Parameters<SyncTransport["pull"]>[0]) {
     this.gate();
     this.calls.pull++;
-    return this.inner.pull(req);
+    return this.note(() => this.inner.pull(req));
   }
 }
 
 /** The real cmd/hub as a child process of the driver, and the few things soakgw still does (internet switch, wall clock, tokens, epoch). */
 export class Ctl {
   private proc: ChildProcess | undefined;
+  /** Called after every hub start (SoakNet sets it): see F27. */
+  afterHubStart: () => Promise<void> = () => Promise.resolve();
   constructor(readonly url: string, private readonly fx: Fixture) {}
   private async post(path: string): Promise<void> {
     const r = await fetch(this.url + path, { method: "POST" });
@@ -221,6 +240,7 @@ export class Ctl {
     this.proc = spawn(process.env.SOAK_HUB_BIN ?? "", ["run"], { env: this.hubEnv(), stdio: ["ignore", log, log] });
     writeFileSync(`${work}/${tag}.hub.pid`, String(this.proc.pid));
     await this.listening();
+    await this.afterHubStart();
   }
   /** The hub process dies (SIGKILL: a crash or a power cut, nothing flushed by the hub). */
   async hubStop(): Promise<void> {
@@ -261,6 +281,8 @@ export type Dev = {
   fx: FxDevice;
   rt: Runtime;
   hubT: GatedTransport;
+  /** The device's LAN transport under the gate (its cached session can be dropped, see F27). */
+  lanT: LanTransport;
   cloudT: GatedTransport;
   lan: Link;
   net: Link;
@@ -278,9 +300,36 @@ export class SoakNet {
   readonly devs = new Map<string, Dev>();
   readonly ctl: Ctl;
   internet = false;
+  /** F27 evidence: hub starts probed, and how many of them showed the stuck session. */
+  f27 = { probes: 0, reproduced: 0, after: [] as Array<Record<string, unknown>> };
   constructor(readonly fx: Fixture, readonly clock: Clock) {
     this.ring = new KeyRing();
     this.ctl = new Ctl(fx.ctl_url, fx);
+    // F27 (client-core LanTransport): the hub makes a new TLS key at every start, and a device's cached LAN session is pinned to the old
+    // certificate: every call then fails with "hub certificate differs from the verified one" until the 15-minute token lapses, because the
+    // transport never drops the session on a pinned-certificate mismatch. The harness first PROVES the failure on one device (the evidence),
+    // then drops every device's session, as a pack refresh would; without that the rest of the day cannot run.
+    this.ctl.afterHubStart = async () => {
+      const live = [...this.devs.values()].filter((d) => d.powered && d.lanT.connected && d.lan.up);
+      const probe = live[0];
+      if (probe) {
+        this.f27.probes++;
+        try {
+          await probe.lanT.hello({ protocol: 1 });
+        } catch (e) {
+          if (/certificate differs/.test(String(e))) this.f27.reproduced++;
+        }
+      }
+      for (const d of this.devs.values()) d.lanT.drop();
+      const snap: Record<string, unknown> = { at: this.clock.ms };
+      for (const d of this.devs.values()) {
+        if (!d.powered) continue;
+        const before = { ...d.hubT.calls };
+        await d.rt.sync.syncNow().catch((e) => (snap[`${d.fx.name}_err`] = String(e).slice(0, 120)));
+        snap[d.fx.name] = { lan_up: d.lan.up, connected: d.lanT.connected, calls: { hello: d.hubT.calls.hello - before.hello, push: d.hubT.calls.push - before.push, refused: d.hubT.calls.refused - before.refused }, status: d.rt.sync.status() };
+      }
+      this.f27.after.push(snap);
+    };
   }
 
   /** A member of the staff by name: id and PIN. */
@@ -291,6 +340,7 @@ export class SoakNet {
   static async create(fx: Fixture, clock: Clock): Promise<SoakNet> {
     const n = new SoakNet(fx, clock);
     for (const [kid, pub] of Object.entries(fx.cloud_keys)) await n.ring.addCloudKey(kid, pub);
+    await n.ctl.hubStart(); // the real cmd/hub on its identity-issued pack: the driver runs it, like the installer would
     return n;
   }
 
@@ -330,6 +380,16 @@ export class SoakNet {
       signer,
       upstream: { hub: hubT, cloud: cloudT, verifier: this.ring },
     });
+    // Observation only: what the engine threw inside a sync round (the runner reports to nobody), by method, for the report.
+    for (const m of ["noteUpstreamTime", "noteUpstream", "noteHubEpoch", "noteCloudHello", "outbox", "applyRemote", "setHeld", "staleSeals", "placeholders", "refreshSeals", "sealIfDue"]) {
+      const eng = rt.engine as unknown as Record<string, (...a: unknown[]) => Promise<unknown>>;
+      const orig = eng[m]?.bind(rt.engine);
+      if (orig) eng[m] = async (...a: unknown[]) => orig(...a).catch((e: unknown) => {
+        const msg = `engine.${m}: ${e instanceof Error ? e.message : String(e)}`.slice(0, 200);
+        hubT.errors.set(msg, (hubT.errors.get(msg) ?? 0) + 1);
+        throw e;
+      });
+    }
     const record = rt.engine.record.bind(rt.engine);
     const opLog: Dev["opLog"] = o.store ? (this.devs.get(name)?.opLog ?? []) : [];
     // Observation only (the claims that name specific ops read opLog); the spec passes through unchanged.
@@ -343,6 +403,7 @@ export class SoakNet {
       fx: d,
       rt,
       hubT,
+      lanT,
       cloudT,
       lan,
       net,
@@ -400,9 +461,26 @@ export class SoakNet {
 
   /** One round per powered device, twice (what the others pushed in the first pass is pulled in the second). */
   async sync(): Promise<void> {
-    await this.ctl.clock(this.clock.ms);
+    // A device that failed three times waits 15 s before it tries the hub again (runner HUB_PROBE_MS, on ITS clock): a round of the harness is the later moment.
+    this.clock.advance(16_000);
     for (let i = 0; i < 2; i++) for (const d of this.devs.values()) if (d.powered) await d.rt.sync.syncNow();
     for (const d of this.devs.values()) if (d.powered) await d.rt.data.refresh();
+    await this.lagCheck();
+  }
+
+  /** Diagnostic: devices whose own head is ahead of what the hub states it holds (their push did not land), recorded with the first few occurrences. */
+  lag: Array<{ at: number; device: string; head: number; hub: number }> = [];
+  private async lagCheck(): Promise<void> {
+    const live = [...this.devs.values()].filter((d) => d.powered && d.lan.up);
+    const probe = live[0];
+    if (!probe || this.lag.length > 40) return;
+    const h = (await probe.lanT.hello({ protocol: 1 }).catch(() => undefined)) as { vector?: Record<string, number> } | undefined;
+    if (!h?.vector) return;
+    for (const d of live) {
+      const head = (await d.rt.engine.vector())[d.fx.device_id] ?? 0;
+      const hub = h.vector[`${d.fx.device_id}/outlet:${this.fx.outlet_id}`] ?? 0;
+      if (head > hub) this.lag.push({ at: this.clock.ms, device: d.fx.name, head, hub, next: d.opLog.find((o) => o.origin === d.fx.device_id && o.seq === hub + 1)?.intent, status: JSON.stringify(d.rt.sync.status()) } as never);
+    }
   }
 
   /**
@@ -439,7 +517,8 @@ export class SoakNet {
       last = sig;
       if (Date.now() - t0 > 240_000) break;
     }
-    throw new Error(`settle: did not quiesce in ${maxRounds} rounds; last rounds: ${trace.slice(-4).join(" | ")}`);
+    const errs = [...this.devs.values()].map((d) => `${d.fx.name} lan ${JSON.stringify([...d.hubT.errors])} cloud ${JSON.stringify([...d.cloudT.errors])}`).filter((x) => x.includes("[[")).join("; ");
+    throw new Error(`settle: did not quiesce in ${maxRounds} rounds; last rounds: ${trace.slice(-4).join(" | ")}; transport errors: ${errs.slice(0, 600)}`);
   }
 }
 

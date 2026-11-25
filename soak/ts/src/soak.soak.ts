@@ -82,6 +82,9 @@ describe(`trading-day soak, seed ${seed}, number_at=${mode}`, () => {
       seed, mode, date, tenant_id: fx.tenant_id, outlet_id: fx.outlet_id, wall_ms: Date.now() - t0, day_wall_ms: dayWall, reconnect_rounds: rounds, reconnect_wall_ms: convergedWallMs, post_revision_rounds: rounds2, revision_count_seen: revCount,
       claims, gateway_ops: gwOps.map(([c, s, r, n]) => ({ cloud_origin: c === "t", status: s, reason: r, n: Number(n) })), parked: { billing: parked("billing"), orders: parked("orders") },
       facts: { steps_failed: facts.steps.filter((s) => !s.ok), steps_total: facts.steps.length, events: facts.events, z: facts.z, z2: facts.z2, hubKills: facts.hubKills, hubWipes: facts.hubWipes, restarts: facts.restarts, lostAcks: facts.lostAcks, bills_by_device: facts.billsMadeBy, approvals: facts.approvals, config: facts.config, kot_latency_ms: facts.kotLatencyMs, blackout: facts.blackout, late_bill: facts.lateBill, scenarios: facts.scn, wrong_tax: facts.wrongTax },
+      f27: net.f27,
+      lag: net.lag,
+      transport_errors: Object.fromEntries([...net.devs.values()].map((d) => [d.fx.name, { lan_refusals: d.hubT.refusals.slice(0, 4), lan_holds: d.hubT.holds.slice(0, 4), lan: [...d.hubT.errors], cloud: [...d.cloudT.errors], lan_calls: d.hubT.calls, cloud_calls: d.cloudT.calls }])),
       extra: { ...extra, restore, digest_pre_restore: digestPre },
     };
     writeFileSync(`${out}.result.json`, JSON.stringify(result, null, 1));

@@ -133,6 +133,7 @@ func main() {
 	orgFlag := flag.String("org", "", "organisation id for -change-plan")
 	hubCode := flag.Bool("hub-code", false, "sign the owner of -mobile in and print a fresh activation code for a hub (kind hub) of -outlet")
 	outletFlag := flag.String("outlet", "", "outlet id for -hub-code")
+	tokenFile := flag.String("onboard-file", "", "onboard.json whose owner_access_token -hub-code reuses")
 	loginOnly := flag.Bool("login-only", false, "sign the owner of -mobile in again (access tokens live 15 minutes) and print the access token")
 	flag.Parse()
 	idURL, tnURL, adURL, origin := env("SOAK_IDENTITY_URL"), env("SOAK_TENANCY_URL"), env("SOAK_ADMIN_URL"), env("SOAK_ADMIN_ORIGIN")
@@ -141,7 +142,21 @@ func main() {
 		return
 	}
 	if *hubCode {
-		oc := hx.New(idURL).With("Authorization", "Bearer "+ownerLogin(idURL, *mobile))
+		// The owner's access token of the onboarding (15 minutes) is reused: a second OTP sign-in of the same owner is rate limited by identity.
+		tok := ""
+		if *tokenFile != "" {
+			if raw, err := os.ReadFile(*tokenFile); err == nil {
+				var ob struct {
+					Token string `json:"owner_access_token"`
+				}
+				_ = json.Unmarshal(raw, &ob)
+				tok = ob.Token
+			}
+		}
+		if tok == "" {
+			tok = ownerLogin(idURL, *mobile)
+		}
+		oc := hx.New(idURL).With("Authorization", "Bearer "+tok)
 		r := must(oc.Post("/v1/activation-codes", map[string]any{"outlet_id": *outletFlag, "kind": "hub"}, "Idempotency-Key", hx.NewID()), "createActivationCode hub", 201)
 		fmt.Print(r.Map()["code"].(string))
 		return
