@@ -391,7 +391,7 @@ func init() {
 		// look at the approval of an override intent and flags the op permission_flag, and every sync.op.flagged event blocks the orders and billing consumers
 		// (findings F17, F14). The approval flow itself (proof, record) still runs.
 		"bill.discount.over_limit", "bill.line.comp")
-	manager := append(append([]string{}, cashier...), "order.line.cancel", "bill.discount.over_limit", "bill.line.comp", "bill.credit_note.create", "bill.rebill", "bill.cancel",
+	manager := append(append([]string{}, cashier...), "order.line.cancel", "bill.credit_note.create", "bill.rebill", "bill.cancel",
 		"payment.refund", "day.close", "shift.close.any", "bill.manual_entry", "report.view.day", "report.view.outlet", "floor.manage", "menu.manage", "menu.price.edit", "settings.outlet.edit")
 	rolePerms["waiter"], rolePerms["cashier"], rolePerms["manager"] = waiter, cashier, manager
 }

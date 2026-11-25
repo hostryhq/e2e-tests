@@ -102,7 +102,16 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
         const diff: string[] = [];
         for (const e of names) {
           const [a, b] = [await sig(d, e), await sig(ref, e)];
-          if (a !== b) diff.push(`${e} (${await rowsOf(d, e)} rows vs ${await rowsOf(ref, e)} on ${ref.fx.name})`);
+          if (a !== b) {
+            const [ra, rb] = [new Map(((await d.rt.engine.rows(e)) as R[]).map((r) => [r.id, r])), new Map(((await ref.rt.engine.rows(e)) as R[]).map((r) => [r.id, r]))];
+            const fields = new Set<string>();
+            for (const [id, x] of ra) {
+              const y = rb.get(id);
+              if (!y) fields.add("(row missing on ref)");
+              else for (const k of new Set([...Object.keys(x), ...Object.keys(y)])) if (JSON.stringify(x[k]) !== JSON.stringify(y[k])) fields.add(k);
+            }
+            diff.push(`${e} (${await rowsOf(d, e)} rows vs ${await rowsOf(ref, e)} on ${ref.fx.name}; fields ${[...fields].join(",")})`);
+          }
         }
         t.note(`${d.fx.name} differs from ${ref.fx.name} in: ${diff.join(", ") || "no entity row (clock or hold bookkeeping only)"}`);
       }
@@ -293,6 +302,12 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     for (const [o, , n] of gw) gwByOrigin[o!] = (gwByOrigin[o!] ?? 0) + Number(n);
     const rows2 = devs.map((d) => ({ dev: d.fx.name, attention: d.rt.sync.status().attentionOps, gateway: gwByOrigin[d.fx.device_id] ?? 0 }));
     extra.attention = rows2;
+    {
+      // What the attention count is made of (held ops, refused ops, conflicts to confirm, chain conflicts, clock-held ops), per device.
+      const parts = await Promise.all(devs.map(async (d) => ({ dev: d.fx.name, held: d.rt.engine.heldOps().length, refused: d.rt.engine.refusedOps().length, conflicts: ((await d.rt.engine.conflicts()) as R[]).map((c) => `${c.entity ?? c.e}.${c.field ?? c.f}`), clock_held: (await d.rt.engine.clockQuarantine()).map((o) => `${devs.find((x) => x.fx.device_id === o.origin)?.fx.name ?? o.origin.slice(-4)}/${o.seq}`) })));
+      extra.attention_parts = parts;
+      t.note(`attention made of: ${JSON.stringify(parts.slice(0, 2))} (same on every device: ${new Set(parts.map((p) => JSON.stringify([p.held, p.refused, p.conflicts, p.clock_held]))).size === 1})`);
+    }
     const mismatch = rows2.filter((r) => r.attention !== r.gateway);
     t.ok(mismatch.length === 0, `ops shown as needing attention equal the quarantined or voided: ${rows2.filter((r) => r.gateway).map((r) => `${r.dev} ${r.attention}=${r.gateway}`).join(", ") || "none quarantined"}`, `attention vs gateway quarantined/voided per origin: ${JSON.stringify(mismatch)}`);
     void origin;
@@ -462,8 +477,19 @@ export async function erasureClaim(i: Inputs): Promise<Claim> {
   const res = [];
   {
     // POST /internal/v1/pii/erase as billing (the route svc-sync now has; one request names every target).
+    // The caller names every op that carries the values: the owners of the side tables know them (billing and orders keep sync_pii with the
+    // op reference), so the targets are the union of what the script recorded and what those tables hold for the customer.
+    const have = new Set(e.refs.map((r) => `${r.origin}|${r.stream}|${r.seq}`));
+    for (const db of ["billing", "orders"]) {
+      for (const [o, st, sq] of psql(db, `select origin, stream, seq from sync_pii where tenant_id='${i.tenant}' and (fields::text like '%${e.name}%' or fields::text like '%${e.gstin}%')`)) {
+        if (!have.has(`${o}|${st}|${sq}`)) {
+          have.add(`${o}|${st}|${sq}`);
+          e.refs.push({ intent: `(from ${db} sync_pii)`, origin: o!, stream: st!, seq: Number(sq) });
+        }
+      }
+    }
     const tok = await serviceToken("billing", "sync", i.tenant);
-    const r = await fetch(`${net.fx.cloud_url}/internal/v1/pii/erase`, { method: "POST", headers: { "content-type": "application/json", "Hostry-Service-Token": tok, "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ targets: e.refs }) });
+    const r = await fetch(`${net.fx.cloud_url}/internal/v1/pii/erase`, { method: "POST", headers: { "content-type": "application/json", "Hostry-Service-Token": tok, "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ targets: e.refs.map(({ origin, stream, seq }) => ({ origin, stream, seq })) }) });
     res.push({ status: r.status, body: await r.text() });
   }
   t.ok(res.every((r) => r.status === 200), `gateway erasure issued for ${res.length} op(s) (POST /internal/v1/pii/erase as billing)`, `erase refused: ${JSON.stringify(res.map((r) => [r.status, r.body.slice(0, 80)]))}`);

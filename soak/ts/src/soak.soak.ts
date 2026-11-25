@@ -14,11 +14,13 @@ describe(`trading-day soak, seed ${seed}, number_at=${mode}`, () => {
   it("runs the day, reconnects, and checks claims T1 to T13", async () => {
     const fx = loadFixture();
     const onboard = JSON.parse(readFileSync(process.env.SOAK_ONBOARD ?? "", "utf8")) as { owner_mobile: string };
-    // The virtual trading day is yesterday (UTC) from 13:05 IST: services that read their own wall clock (billing seals a
-    // Z revision once a late batch has been quiet for 30 s) then see every op as being in the past.
-    const d0 = new Date();
-    d0.setUTCDate(d0.getUTCDate() - 1);
-    d0.setUTCHours(7, 35, 0, 0);
+    // The virtual trading day starts NOW (wall clock) and runs forward from there. The real gateway stamps cloud-origin ops with its own
+    // clock, and a device holds a last-writer-wins op stamped more than MAX_FUTURE_MS ahead of its clock in clock quarantine (S5): with the
+    // devices a day behind, the outlet's tax profile and numbering settings never applied. The day (up to ~9 virtual hours) must stay
+    // inside one IST business day (cutoff 05:00), so the harness refuses to start outside 06:00 to 19:30 IST.
+    const d0 = new Date(Date.now() - 10_000);
+    const istHour = (d0.getUTCHours() + 5.5 + d0.getUTCMinutes() / 60) % 24;
+    if (istHour < 6 || istHour > 19.5) throw new Error(`the soak starts at wall-clock time; run it between 06:00 and 19:30 IST (now ${istHour.toFixed(1)} IST)`);
     const clock = new Clock(d0.getTime());
     const date = new Date(d0.getTime() + 5.5 * 3_600_000).toISOString().slice(0, 10);
     const net = await SoakNet.create(fx, clock);

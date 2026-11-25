@@ -5,7 +5,7 @@ import { Clock, SoakNet, loadFixture } from "./net";
 describe("smoke: configuration through legal routes, then two devices converge", () => {
   it("publishes config and syncs", async () => {
     const fx = loadFixture();
-    const clock = new Clock(Date.now() - 24 * 3_600_000);
+    const clock = new Clock(Date.now() - 10_000);
     const net = await SoakNet.create(fx, clock);
     const counter = await net.add("A07", { openDay: false });
     const cap = await net.add("B3K");
