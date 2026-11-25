@@ -410,8 +410,16 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
       const unresolved = presented.filter((c) => !billedChecks.has(c) && !cancels.has(c) && checks.find((x) => x.id === c)?.status === "open");
       t.ok(unresolved.length === 0, "every presented check ended billed, cancelled with approval or carried over", `${unresolved.length} presented check(s) neither billed nor cancelled`);
     } else {
-      const invoices = presented.filter((c) => billedChecks.has(c));
-      t.ok(presented.length > 0 && invoices.length === presented.length, `print mode: every presented check (${presented.length}) is finalised by Present`, `print mode: ${presented.length - invoices.length} presented check(s) have no bill`);
+      // In an outlet set to print the first Present IS the finalisation (ADR-0014 A1.5): it records no pre-bill (`check_present`) at all and issues
+      // the numbered invoice, so the evidence is that no pre-bill row exists while invoices do, that the numbers consumed equal the documents, and
+      // that every check the script presented ended billed.
+      const own = bills.filter((b) => (b as R).source_kind !== "manual_book");
+      const nums = own.length + notes.length;
+      const used = register.filter((r: R) => r.kind === "device").reduce((n: number, r: R) => n + r.count, 0);
+      t.ok(own.length > 0 && presents.length === 0, `print mode: ${own.length} invoices were issued and no pre-bill row exists (Present finalised, it never recorded an unnumbered pre-bill)`, `print mode: ${presents.length} pre-bill row(s) exist beside ${own.length} invoices`);
+      t.ok(used === nums, `numbers consumed (${used}) equal documents that exist (${nums})`, `numbers consumed ${used} != documents ${nums}`);
+      const openChecks = checks.filter((x) => x.status === "open" && !billedChecks.has(x.id) && !cancels.has(x.id));
+      t.ok(openChecks.length === 0, "no check is left open without a bill or a cancellation", `${openChecks.length} open check(s) without a bill`);
     }
     var t12 = t.c;
   }

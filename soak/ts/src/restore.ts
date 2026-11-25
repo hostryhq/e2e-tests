@@ -15,11 +15,14 @@ export async function cloudRestore(net: SoakNet, tenant: string, seed: number): 
   const count = (): number => Number(psql("sync", `select count(*) from ops where tenant_id='${tenant}'`)[0]![0]);
   ev.ops_at_backup = count();
   pg(["sh", "-c", "pg_dump -U hostry -d sync --data-only --disable-triggers > /tmp/soak-sync-backup.sql"]);
-  // New activity after the backup (the day is closed, so no sales): availability changes on the counters, accepted by the cloud.
+  // New activity after the backup (the day is closed, so no sales): bill reprints on the counters, which the cloud accepts. Reprints are
+  // append ops; the earlier availability changes were last-writer-wins configuration ops, which the real gateway holds for review when the
+  // device clock is more than 10 minutes ahead of its own (and the virtual day runs hours ahead of the wall clock).
   for (const [i, name] of ["A07", "A08", "A07", "A08", "A07", "A08"].entries()) {
     const d = net.dev(name);
     await d.signIn("Meena");
-    await T.setAvailability(d.rt.ctx, i % 2 ? "it-vada" : "it-dosa", i % 3 === 0);
+    const bills = ((await d.rt.engine.rows("bill")) as Array<{ id: string; number: string }>).sort((a, b) => (a.number < b.number ? -1 : 1));
+    await T.reprintBill(d.rt.ctx, bills[i % bills.length]!.id);
   }
   await net.settle(60);
   ev.ops_before_restore = count();
