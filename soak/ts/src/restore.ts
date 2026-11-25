@@ -21,7 +21,7 @@ export async function cloudRestore(net: SoakNet, tenant: string, seed: number): 
   for (const [i, name] of ["A07", "A08", "A07", "A08", "A07", "A08"].entries()) {
     const d = net.dev(name);
     await d.signIn("Meena");
-    const bills = ((await d.rt.engine.rows("bill")) as Array<{ id: string; number: string }>).sort((a, b) => (a.number < b.number ? -1 : 1));
+    const bills = ((await d.rt.engine.rows("bill")) as unknown as Array<{ id: string; number: string }>).sort((a, b) => (a.number < b.number ? -1 : 1));
     await T.reprintBill(d.rt.ctx, bills[i % bills.length]!.id);
   }
   await net.settle(60);
@@ -35,7 +35,6 @@ export async function cloudRestore(net: SoakNet, tenant: string, seed: number): 
   pg(["sh", "-c", "psql -U hostry -d sync -q < /tmp/soak-sync-backup.sql > /dev/null"]);
   ev.ops_after_restore = count();
   await net.ctl.epoch(`soak-restore-${seed}`);
-  net.piiResend = true;
   // The nodes meet the new epoch and re-offer what the restored cloud lost.
   let rounds = 0;
   const t0 = Date.now();
@@ -47,6 +46,6 @@ export async function cloudRestore(net: SoakNet, tenant: string, seed: number): 
   ev.hashes_after = await hashOf();
   ev.settle_rounds = rounds;
   ev.reoffer_wall_ms = Date.now() - t0;
-  ev.hub_epoch_changed = net.hubRounds.some((r) => r.epoch_changed);
+  ev.hub_epoch_changed = null; // the real hub runs its own rounds: the harness cannot see its epoch report (see X3)
   return ev;
 }

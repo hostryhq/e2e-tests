@@ -131,11 +131,19 @@ func main() {
 	mobile := flag.String("mobile", "", "owner mobile (+91...)")
 	changePlan := flag.String("change-plan", "", "vendor action: change the subscription of -org to this plan key (version 1), effective today (IST), and print the result")
 	orgFlag := flag.String("org", "", "organisation id for -change-plan")
+	hubCode := flag.Bool("hub-code", false, "sign the owner of -mobile in and print a fresh activation code for a hub (kind hub) of -outlet")
+	outletFlag := flag.String("outlet", "", "outlet id for -hub-code")
 	loginOnly := flag.Bool("login-only", false, "sign the owner of -mobile in again (access tokens live 15 minutes) and print the access token")
 	flag.Parse()
 	idURL, tnURL, adURL, origin := env("SOAK_IDENTITY_URL"), env("SOAK_TENANCY_URL"), env("SOAK_ADMIN_URL"), env("SOAK_ADMIN_ORIGIN")
 	if *loginOnly {
 		fmt.Print(ownerLogin(idURL, *mobile))
+		return
+	}
+	if *hubCode {
+		oc := hx.New(idURL).With("Authorization", "Bearer "+ownerLogin(idURL, *mobile))
+		r := must(oc.Post("/v1/activation-codes", map[string]any{"outlet_id": *outletFlag, "kind": "hub"}, "Idempotency-Key", hx.NewID()), "createActivationCode hub", 201)
+		fmt.Print(r.Map()["code"].(string))
 		return
 	}
 	suffix := hx.NewJTI()[:8]
@@ -283,8 +291,14 @@ func main() {
 		key, did := hx.NewDeviceKey(), hx.NewID()
 		nr := must(idc.Post("/v1/device-nonces", nil, "Idempotency-Key", hx.NewID()), "nonce", 200, 201)
 		nonce := nr.Map()["nonce"].(string)
+		// Tills and tablets declare `store: protected` (the native shell's encrypted store, ADR-0002 A3.5), so another device's customer details may be
+		// kept there; a kitchen screen holds none whatever it declares. Identity (HOSTRY_ENV dev) accepts either.
+		store := "protected"
+		if kind == "kds" {
+			store = "unprotected"
+		}
 		reg := oc.Post("/v1/devices", map[string]any{"id": did, "kind": kind, "name": dname, "outlet_id": outletID, "public_key": key.JWK(),
-			"key_protection": "os-software", "nonce": nonce, "nonce_signature": key.SignRaw(nonce)}, "Idempotency-Key", hx.NewID())
+			"key_protection": "os-software", "store": store, "nonce": nonce, "nonce_signature": key.SignRaw(nonce)}, "Idempotency-Key", hx.NewID())
 		must(reg, "registerDevice "+kind+":"+dname, 201)
 		pk, err := x509.MarshalPKCS8PrivateKey(key.Priv)
 		if err != nil {

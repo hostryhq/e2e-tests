@@ -3,9 +3,9 @@
 #   start-gw.sh <gw-binary> <onboard.json> <fixture.json> <hub-dir> <log> <pidfile> [start-ms]
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-bin="$1" onb="$2" fx="$3" hubdir="$4" log="$5" pidf="$6" startms="${7:-0}"
+bin="$1" onb="$2" fx="$3" hubdir="$4" log="$5" pidf="$6"
 rm -f "$fx"
-"$here/with-stack-env.sh" "$bin" -onboard "$onb" -out "$fx" -hub-dir "$hubdir" -start-ms "$startms" >"$log" 2>&1 &
+"$here/with-stack-env.sh" "$bin" -onboard "$onb" -out "$fx" -hub-dir "$hubdir" >"$log" 2>&1 &
 echo $! >"$pidf"
 for _ in $(seq 1 60); do
   [ -s "$fx" ] && exit 0

@@ -173,8 +173,8 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
         const placed = await Promise.all(devs.map(async (d) => [d.fx.name, d.fx.kind, await holds(d)] as const));
         const bad = placed.filter((p) => (p[1] === "kds" ? p[2] : !p[2]));
         t.ok(bad.length === 0, `pii placement: ${placed.map((p) => `${p[0]}(${p[1]})=${p[2] ? "values" : "none"}`).join(" ")}`, `pii placed wrongly: ${bad.map((p) => `${p[0]}(${p[1]}) ${p[2] ? "holds values" : "holds none"}`).join(", ")}`);
-        const hub = (await (await fetch(`${net.fx.ctl_url}/soak/hub/pii?needle=${encodeURIComponent(e.name)}`)).json()) as { rows: number; with_needle: number };
-        t.ok(hub.with_needle > 0, `the hub holds the customer's name (${hub.with_needle} of ${hub.rows} op_pii rows)`, `the hub holds no op_pii row with the customer's name (${hub.rows} rows)`);
+        const hub = (await (await fetch(`${net.fx.ctl_url}/soak/hub/pii?needle=${encodeURIComponent(e.name)}`)).json()) as { rows: number; files_with_needle_in_clear: number };
+        t.ok(hub.rows > 0 && hub.files_with_needle_in_clear === 0, `the real hub holds ${hub.rows} op_pii row(s) and the customer's name is in the clear in none of its files (column encryption)`, hub.rows <= 0 ? `the hub holds no op_pii row (${hub.rows})` : `the customer's name is in the clear in ${hub.files_with_needle_in_clear} file(s) of the hub's disk`);
       }
     }
     const cloud = await a07.cloudT.hello({ protocol: 1 }).catch((e) => ({ vector: {}, err: String(e) }));
@@ -400,7 +400,7 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
         continue;
       }
       const texts = new Map<string, string>();
-      const dev = deviceDigest(owner, date, rows, texts);
+      const dev = deviceDigest(owner, date, rows as Parameters<typeof deviceDigest>[2], texts);
       const diff = compareDigests(dev, svcDigest);
       if (owner === "orders" && dev.state_hash !== svcDigest.state_hash) {
         // Diagnostic: the commitments the device holds for each `check` row, against what orders recorded for it.
@@ -668,7 +668,7 @@ export async function digestDiffs(net: SoakNet, svc: Svc, date: string): Promise
   const out = { orders: [] as string[], billing: [] as string[] };
   for (const owner of ["orders", "billing"] as const) {
     const sd = (await svc.get(owner, `/v1/projection-digests?business_date=${date}`)).json;
-    out[owner] = sd?.entities ? compareDigests(deviceDigest(owner, date, rows), sd) : [`no digest: ${JSON.stringify(sd).slice(0, 100)}`];
+    out[owner] = sd?.entities ? compareDigests(deviceDigest(owner, date, rows as Parameters<typeof deviceDigest>[2]), sd) : [`no digest: ${JSON.stringify(sd).slice(0, 100)}`];
   }
   return out;
 }
@@ -681,7 +681,7 @@ export async function restoreClaim(i: Inputs): Promise<Claim> {
   t.note(`cloud ops: ${r.ops_at_backup} at backup, ${r.ops_before_restore} before the restore, ${r.ops_after_restore} right after it, ${r.ops_after_reoffer} after the nodes re-offered`);
   t.ok(r.ops_after_restore < r.ops_before_restore, "the restore really rolled the cloud back (it lost ops)", "the restore lost nothing: the scenario did not roll the cloud back");
   t.ok(r.ops_after_reoffer >= r.ops_before_restore, `the cloud holds every op again after ${r.settle_rounds} rounds (${r.reoffer_wall_ms} ms wall)`, `the cloud holds ${r.ops_after_reoffer} ops after the re-offer, it had ${r.ops_before_restore}`);
-  t.ok(r.hub_epoch_changed === true, "the hub's round reported the epoch change", "no hub round reported an epoch change");
+  t.note("the real hub's own epoch report is not observable to the harness (it runs its rounds itself); what is checked is the effect: every device converges to the restated cloud and no state hash changes");
   const same = Object.keys(r.hashes_before).every((k) => r.hashes_before[k] === r.hashes_after[k]);
   t.ok(same, "no device's state changed through the rollback and the re-offer (state hash equal before and after, per device)", `device state hashes changed through the rollback: ${Object.keys(r.hashes_before).filter((k) => r.hashes_before[k] !== r.hashes_after[k]).join(", ")}`);
   return t.c;

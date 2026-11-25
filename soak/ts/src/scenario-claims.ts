@@ -88,21 +88,24 @@ export async function scenarioClaims(i: Inputs): Promise<Claim[]> {
     out.push(asClaim("S5", "Duplicate invoice number under two bill ids", duplicateDocumentVerdict(s, d ? gatewayRows(tenant, d.secondOp) : [], { bills: sBills.map((b) => ({ id: b.id, number: b.number })), exceptions: bExc })));
   }
 
-  // S6 (P2-H1): wait out the window on the gateway's clock, then look at the op.
+  // S6 (P2-H1): the gateway judges "missing" ApprovalMaxAge (120 s) plus ApprovalMissingGrace (10 min) after it stored the op, on its own WALL
+  // clock. Nothing in the real gateway can be set, so the harness waits that long in real time (SOAK_APPROVAL_WINDOW_MS, default 16 min), polling
+  // until the op is flagged. A seed run with SOAK_APPROVAL_WINDOW_MS=0 does not wait: S6 is then recorded as not run, with what the op shows now.
   {
     const fa = s.fakeApproval;
     let rowsOf: GatewayOpRow[] = [];
+    const windowMs = Number(process.env.SOAK_APPROVAL_WINDOW_MS ?? 960_000);
     if (fa) {
-      net.clock.advance(10 * 60_000);
-      await net.ctl.clock(net.clock.ms);
-      const end = Date.now() + Number(process.env.SOAK_APPROVAL_WINDOW_MS ?? 120_000);
+      const end = Date.now() + windowMs;
       for (;;) {
         rowsOf = gatewayRows(tenant, fa.op);
-        if (rowsOf.some((r) => r.marks.includes("approval_flag")) || Date.now() > end) break;
-        await new Promise((r) => setTimeout(r, 3_000));
+        if (rowsOf.some((r) => r.marks.includes("approval_flag")) || Date.now() >= end) break;
+        await new Promise((r) => setTimeout(r, 5_000));
       }
     }
-    out.push(asClaim("S6", "Override citing a non-existent approval", fakeApprovalVerdict(s, rowsOf)));
+    if (windowMs === 0) {
+      out.push({ id: "S6", name: "Override citing a non-existent approval", status: "not_run", evidence: [`not waited in this seed (SOAK_APPROVAL_WINDOW_MS=0); at the end of the run the gateway shows the op as ${rowsOf[0] ? `${rowsOf[0].status} [${rowsOf[0].marks}]` : "absent"}`], failures: [] });
+    } else out.push(asClaim("S6", "Override citing a non-existent approval", fakeApprovalVerdict(s, rowsOf)));
   }
 
   // S7 (P2-H2)

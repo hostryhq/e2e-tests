@@ -1,23 +1,25 @@
 import { createHmac } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { openSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { readFileSync } from "node:fs";
-import { HttpTransport, KeyRing, SoftwareSigner, TransportError, bearerAuth, lanAuth, type CredentialEnvelope, type SyncTransport, type SeriesGrant } from "@hostry/client-core";
-import { OUTLET_STREAM, createRuntime, openDeviceSession, type Runtime, type RuntimeOptions } from "../../../../app-restaurant/src/runtime";
-import type { ApprovalProofInput, DevicePack, PinProver, SessionProofInput } from "../../../../app-restaurant/src/data/auth/pack";
+import { HttpTransport, KeyRing, LanTransport, SoftwareSigner, TransportError, bearerAuth, type SyncTransport, type SeriesGrant } from "@hostry/client-core";
+import { nodeLanChannel } from "@hostry/client-core/node";
+import { createRuntime, openDeviceSession, type Runtime, type RuntimeOptions } from "../../../../app-restaurant/src/runtime";
+import { loadVerifiedPack, type ApprovalProofInput, type DevicePack, type PinProver, type SessionProofInput } from "../../../../app-restaurant/src/data/auth/pack";
 import { ensureDayOpen } from "../../../../app-restaurant/src/data/trading/orders";
-import { parseEntitlements } from "../../../../app-restaurant/src/domain/entitlements";
 
 export type FxSeries = { id: string; code: string; doc_type: string; status: string };
-export type FxDevice = { device_id: string; kind: "pos" | "waiter" | "kds"; name: string; kid: string; pub: string; pkcs8: string; cred: CredentialEnvelope; series: FxSeries[]; pack: Record<string, any> };
+export type FxDevice = { device_id: string; kind: "pos" | "waiter" | "kds"; name: string; kid: string; pub: string; pkcs8: string; series: FxSeries[]; pack: Record<string, any>; pack_jws: string };
 export type Staff = { id: string; name: "Asha" | "Ravi" | "Meena" | "Anand"; role: string; pin: string };
 export type Fixture = {
   tenant_id: string;
   outlet_id: string;
   brand_id: string;
-  identity_pub: string;
   cloud_keys: Record<string, string>;
   devices: FxDevice[];
-  hub: { id: string; cred: CredentialEnvelope };
+  /** The real cmd/hub the driver runs: its state directory and listen address, and the (switchable) identity and cloud URLs it uses. */
+  hub: { state_dir: string; addr: string; cloud_url: string; identity_url: string; identity_direct_url: string };
   cloud_url: string;
   hub_url: string;
   ctl_url: string;
@@ -64,20 +66,26 @@ export class HarnessProver implements PinProver {
   }
 }
 
-/** The pack the native shell would hand the app, from the signed pack claims identity issued to the device plus tenancy's series ids. */
-export function packOf(fx: Fixture, d: FxDevice): DevicePack {
+/**
+ * The pack the native shell would store at activation: the view of the signed pack claims identity issued to the device (its own `store`
+ * and `issuer_env` included) plus tenancy's series ids, together with the pack's JWS. The app's own `loadVerifiedPack` then checks the
+ * signature and that the view agrees with the signed claims, so a wrong view or a bad signature fails the run here.
+ */
+export async function loadPack(fx: Fixture, d: FxDevice): Promise<DevicePack> {
   const c = d.pack;
   const roleOf = new Map(fx.staff.map((x) => [x.id, x.role]));
   const own = d.series ?? [];
   const grants: SeriesGrant[] = own.map((x) => ({ code: x.code, docType: x.doc_type as SeriesGrant["docType"], state: x.status as SeriesGrant["state"], seriesId: x.id }));
   const invoice = own.find((x) => x.doc_type === "tax_invoice");
-  return {
+  const view = {
     tenantId: fx.tenant_id,
     brandId: fx.brand_id,
     outletId: fx.outlet_id,
     deviceId: d.device_id,
     deviceKind: d.kind,
     kid: d.kid,
+    store: c.device?.store ?? "unprotected",
+    issuerEnv: c.issuer_env,
     deviceCode: invoice?.code ?? d.name,
     packV: c.pack_v,
     expiresAt: c.offline_valid_until,
@@ -85,8 +93,10 @@ export function packOf(fx: Fixture, d: FxDevice): DevicePack {
     members: (c.members as any[]).map((m) => ({ memberId: m.member_id, displayName: m.display_name, role: roleOf.get(m.member_id) ?? "member", perms: m.permissions, pinV: m.pin_v ?? 1 })),
     manualBooks: ((c.manual_books as any[]) ?? []).map((b) => b.code),
     // The signed `entitlements` claim as identity put it in the pack (ADR-0014 T10); absent or malformed means none, trading continues.
-    ...(parseEntitlements(c.entitlements) ? { entitlements: parseEntitlements(c.entitlements)! } : {}),
+    ...(c.entitlements ? { entitlements: c.entitlements } : {}),
+    jws: d.pack_jws,
   };
+  return loadVerifiedPack(view);
 }
 
 /** Deterministic virtual clock, pushed to the gateway and hub before every sync round (they read the same time). */
@@ -99,11 +109,6 @@ export class Clock {
   minutes(n: number): void {
     this.advance(n * 60_000);
   }
-}
-
-/** The proof the stub directory mints for (device, actor): "p1:" + the first 24 hex digits of HMAC-SHA256(secret, device|actor). */
-export function stubProof(device: string, actor: string): string {
-  return "p1:" + createHmac("sha256", "test-only-proof-secret").update(`${device}|${actor}`).digest("hex").slice(0, 24);
 }
 
 export type Link = { up: boolean };
@@ -152,8 +157,10 @@ export class GatedTransport implements SyncTransport {
   }
 }
 
+/** The real cmd/hub as a child process of the driver, and the few things soakgw still does (internet switch, wall clock, tokens, epoch). */
 export class Ctl {
-  constructor(readonly url: string) {}
+  private proc: ChildProcess | undefined;
+  constructor(readonly url: string, private readonly fx: Fixture) {}
   private async post(path: string): Promise<void> {
     const r = await fetch(this.url + path, { method: "POST" });
     if (!r.ok) throw new Error(`ctl ${path}: ${r.status} ${await r.text()}`);
@@ -162,20 +169,81 @@ export class Ctl {
     const r = await fetch(`${this.url}/soak/token?device=${encodeURIComponent(device)}`);
     return r.text();
   }
-  clock(ms: number): Promise<void> {
-    return this.post(`/soak/clock?ms=${ms}`);
+  /** The wall clock of the real hub, gateway and identity (nothing in them can be set). */
+  async wallNow(): Promise<number> {
+    return Number(await (await fetch(`${this.url}/soak/now`)).text());
+  }
+  /** Kept so the scenarios read the same: the real gateway and hub run on wall time and are not set; the virtual clock is the devices'. */
+  clock(_ms: number): Promise<void> {
+    return Promise.resolve();
   }
   uplink(up: boolean): Promise<void> {
     return this.post(`/soak/uplink?up=${up ? 1 : 0}`);
   }
-  hub(op: "stop" | "start" | "wipe"): Promise<void> {
-    return this.post(`/soak/hub?op=${op}`);
+  private hubEnv(): NodeJS.ProcessEnv {
+    const h = this.fx.hub;
+    const work = process.env.SOAK_WORK ?? "";
+    const tag = process.env.SOAK_TAG ?? "";
+    return {
+      PATH: process.env.PATH ?? "",
+      HOSTRY_ENV: "dev",
+      SYNC_HUB_STATE_DIR: h.state_dir,
+      SYNC_HUB_KEY_PROVIDER: "dev",
+      SYNC_HUB_DEV_KEY_FILE: `${work}/${tag}-hub/dev.key`,
+      SYNC_HUB_IDENTITY_URL: h.identity_url,
+      SYNC_HUB_CLOUD_URL: h.cloud_url,
+      SYNC_HUB_ADDR: h.addr,
+      SYNC_HUB_MDNS: "0",
+      // The dev key provider is NOT protection (the key sits beside the file), so this hub declares store unprotected; the lift lets it
+      // keep customer details anyway so T1 can see where they go. The placement on the tills is what the claim checks.
+      SYNC_HUB_DEV_PII_LIFT: "1",
+    };
   }
-  /** One hub round with the cloud; resolves to null while the internet is cut or the hub is down. */
-  async hubSync(): Promise<{ pushed: number; pulled: number; refused: number; epoch_changed: boolean; refusals?: unknown[] } | null> {
-    const r = await fetch(`${this.url}/soak/hub?op=sync`, { method: "POST" });
-    if (!r.ok) return null;
-    return (await r.json()) as { pushed: number; pulled: number; refused: number; epoch_changed: boolean; refusals?: unknown[] };
+  private async listening(): Promise<void> {
+    const [host, port] = this.fx.hub.addr.split(":") as [string, string];
+    for (let i = 0; i < 150; i++) {
+      const ok = await new Promise<boolean>((res) => {
+        const c = connect({ host, port: Number(port) });
+        c.once("connect", () => (c.destroy(), res(true)));
+        c.once("error", () => res(false));
+      });
+      if (ok) return;
+      if (this.proc && this.proc.exitCode !== null) throw new Error(`the hub exited with ${this.proc.exitCode} (see ${process.env.SOAK_WORK}/${process.env.SOAK_TAG}.hub.log)`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error("the hub did not listen");
+  }
+  /** Run the real cmd/hub (hub run) on its state directory. */
+  async hubStart(): Promise<void> {
+    const work = process.env.SOAK_WORK ?? "";
+    const tag = process.env.SOAK_TAG ?? "";
+    const log = openSync(`${work}/${tag}.hub.log`, "a");
+    this.proc = spawn(process.env.SOAK_HUB_BIN ?? "", ["run"], { env: this.hubEnv(), stdio: ["ignore", log, log] });
+    writeFileSync(`${work}/${tag}.hub.pid`, String(this.proc.pid));
+    await this.listening();
+  }
+  /** The hub process dies (SIGKILL: a crash or a power cut, nothing flushed by the hub). */
+  async hubStop(): Promise<void> {
+    const p = this.proc;
+    if (!p) return;
+    this.proc = undefined;
+    if (p.exitCode === null) {
+      const done = new Promise<void>((r) => p.once("exit", () => r()));
+      p.kill("SIGKILL");
+      await done;
+    }
+  }
+  /** A new disk: the old state is gone, so the replaced hub is a NEW device with a NEW activation code (ADR-0002 A3.1 item 6). */
+  async hubWipe(onboard: { owner_mobile: string; outlet_id: string }): Promise<void> {
+    await this.hubStop();
+    execFileSync("bash", [`${process.env.SOAK_SCRIPTS_DIR}/hub-activate.sh`, process.env.SOAK_WORK ?? "", process.env.SOAK_TAG ?? "", onboard.owner_mobile, onboard.outlet_id], { stdio: "pipe" });
+    await this.hubStart();
+  }
+  async hub(op: "stop" | "start" | "wipe"): Promise<void> {
+    if (op === "stop") return this.hubStop();
+    if (op === "start") return this.hubStart();
+    const ob = JSON.parse(readFileSync(process.env.SOAK_ONBOARD ?? "", "utf8")) as { owner_mobile: string; outlet_id: string };
+    return this.hubWipe(ob);
   }
   /** The real gateway process, stopped or started by the stack script (up-full.sh stop|start|restart sync). */
   async gateway(op: "down" | "up" | "restart"): Promise<void> {
@@ -210,12 +278,9 @@ export class SoakNet {
   readonly devs = new Map<string, Dev>();
   readonly ctl: Ctl;
   internet = false;
-  /** Set after a cloud restore: the hub re-offers its pii-bearing ops on every round for a day (see settle). */
-  piiResend = false;
-  hubRounds: Array<{ pushed: number; pulled: number; refused: number; epoch_changed: boolean; refusals?: unknown[] }> = [];
   constructor(readonly fx: Fixture, readonly clock: Clock) {
-    this.ring = new KeyRing(fx.identity_pub);
-    this.ctl = new Ctl(fx.ctl_url);
+    this.ring = new KeyRing();
+    this.ctl = new Ctl(fx.ctl_url, fx);
   }
 
   /** A member of the staff by name: id and PIN. */
@@ -226,7 +291,6 @@ export class SoakNet {
   static async create(fx: Fixture, clock: Clock): Promise<SoakNet> {
     const n = new SoakNet(fx, clock);
     for (const [kid, pub] of Object.entries(fx.cloud_keys)) await n.ring.addCloudKey(kid, pub);
-    await n.ctl.clock(clock.ms);
     return n;
   }
 
@@ -241,17 +305,27 @@ export class SoakNet {
     const offsetMs = o.offsetMs ?? 0;
     if (offsetMs) this.offsets.set(name, offsetMs);
     const devNow = (): number => this.clock.ms + offsetMs;
-    const hubT = new GatedTransport(
-      new HttpTransport({ baseUrl: this.fx.hub_url, auth: lanAuth({ cred: d.cred, signer, identityPub: this.fx.identity_pub, outlet: this.fx.outlet_id, nowSeconds: () => Math.floor(this.clock.ms / 1000) }) }),
-      lan,
-      `lan:${name}`,
-    );
+    const pack = await loadPack(this.fx, d);
+    // The LAN channel of the node runtime (client-core/node): TLS 1.3, any certificate accepted and the peer proven by helloLan and openLanSession
+    // with the identity-signed credentials of the packs (the hub's own credential is checked against the identity keys of THIS device's pack).
+    const lanT = new LanTransport({
+      channel: nodeLanChannel({ baseUrl: this.fx.hub_url }),
+      credential: d.pack.device.credential as string,
+      deviceId: d.device_id,
+      signer,
+      identityKeys: () => pack.identityKeys ?? {},
+      tenantId: this.fx.tenant_id,
+      outletId: this.fx.outlet_id,
+      nowSeconds: () => Math.floor(this.clock.ms / 1000),
+    });
+    const hubT = new GatedTransport(lanT, lan, `lan:${name}`);
     const cloudT = new GatedTransport(new HttpTransport({ baseUrl: this.fx.cloud_url, auth: bearerAuth(() => this.ctl.token(d.device_id)) }), net, `net:${name}`);
     const prover = new HarnessProver(this.fx);
     const rt = await createRuntime({
       now: devNow,
       ...(o.store ? { store: o.store } : {}),
-      pack: packOf(this.fx, d),
+      pack,
+      target: "native", // a native development build: the pack's store claim (protected) and its issuer_env (dev) are honoured
       prover,
       signer,
       upstream: { hub: hubT, cloud: cloudT, verifier: this.ring },
@@ -331,26 +405,41 @@ export class SoakNet {
     for (const d of this.devs.values()) if (d.powered) await d.rt.data.refresh();
   }
 
-  /** Repeat rounds until every vector, the hub's and the cloud's stops moving. */
+  /**
+   * Repeat rounds until the devices agree with each other and, while the internet is up, with the cloud, and nothing has moved for two rounds.
+   * The real hub syncs with the cloud on its own timer (about every 2 s, up to 75 s after the internet returns: its own backoff), so a round
+   * waits on the wall clock when the internet is up; with it cut only the LAN is awaited.
+   */
   async settle(maxRounds = 60): Promise<number> {
     let last = "";
+    let still = 0;
     const trace: string[] = [];
+    const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    const t0 = Date.now();
     for (let i = 1; i <= maxRounds; i++) {
       this.clock.advance(5_000);
-      await this.ctl.clock(this.clock.ms);
-      const hr = this.internet ? await this.ctl.hubSync() : null;
+      if (this.internet) await wait(2_500);
       await this.sync();
-      if (hr) this.hubRounds.push(hr);
-      const vs = await Promise.all([...this.devs.values()].filter((d) => d.powered).map(async (d) => Object.entries(await d.rt.engine.vector()).sort()));
-      const sig = JSON.stringify([vs, hr?.pushed ?? 0, hr?.pulled ?? 0]);
-      trace.push(`round ${i}: hub ${hr ? `pushed ${hr.pushed} pulled ${hr.pulled} refused ${hr.refused}` : "no round"}; vectors ${last === "" || sig.split("]],")[0] !== last.split("]],")[0] ? "moved" : "same"}`);
-      // After a cloud restore the engine offers the pii-bearing ops again on EVERY round for a day (svc-sync engine ResendPII, ADR-0014 A3.1): the hub pushes
-      // them each time and the cloud already holds them, so `pushed` is not progress then; the vectors and what is pulled are.
-      if (sig === last && (!hr || (hr.pulled === 0 && (hr.pushed === 0 || this.piiResend)))) return i;
+      const powered = [...this.devs.values()].filter((d) => d.powered);
+      const vs = await Promise.all(powered.map(async (d) => Object.entries(await d.rt.engine.vector()).sort()));
+      let cloudSig = "";
+      let agree = vs.every((v) => JSON.stringify(v) === JSON.stringify(vs[0]));
+      if (this.internet) {
+        const h = await powered[0]!.cloudT.hello({ protocol: 1 }).catch(() => undefined);
+        const cv: Record<string, number> = {};
+        for (const [k, v] of Object.entries(((h as { vector?: Record<string, number> } | undefined)?.vector) ?? {})) if (k.endsWith(`/outlet:${this.fx.outlet_id}`)) cv[k.split("/")[0]!] = v;
+        cloudSig = JSON.stringify(Object.entries(cv).sort());
+        const mine = (vs[0] ?? []).filter(([, n]) => (n as number) > 0).map(([o, n]) => [o, n] as [string, number]);
+        agree = agree && h !== undefined && JSON.stringify(mine) === cloudSig;
+      }
+      const sig = JSON.stringify([vs, cloudSig]);
+      still = sig === last ? still + 1 : 0;
+      trace.push(`round ${i}: devices ${agree ? "agree" : "differ"}; ${still} quiet`);
+      if (agree && still >= (this.internet ? 2 : 1)) return i;
       last = sig;
+      if (Date.now() - t0 > 240_000) break;
     }
     throw new Error(`settle: did not quiesce in ${maxRounds} rounds; last rounds: ${trace.slice(-4).join(" | ")}`);
   }
 }
 
-export { OUTLET_STREAM };

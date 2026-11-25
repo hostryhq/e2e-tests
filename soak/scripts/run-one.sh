@@ -11,12 +11,13 @@ started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 "$here/provision.sh" "$work" "$tag" >"$out/provision.log" 2>&1
 cd "$here/../ts"
 set +e
-SOAK_VENDOR_STATE="$work/vendor-state.json" SOAK_EPOCH="$epoch" SOAK_ONBOARD="$work/$tag.onboard.json" SOAK_ONBOARD_BIN="$work/soak-onboard" SOAK_STATE="${HOSTRY_LOCAL_DIR:-/tmp/hostry-soak/local}" \
+SOAK_WORK="$work" SOAK_TAG="$tag" SOAK_SCRIPTS_DIR="$here" SOAK_HUB_BIN="$work/hub" SOAK_VENDOR_STATE="$work/vendor-state.json" SOAK_EPOCH="$epoch" SOAK_ONBOARD="$work/$tag.onboard.json" SOAK_ONBOARD_BIN="$work/soak-onboard" SOAK_STATE="${HOSTRY_LOCAL_DIR:-/tmp/hostry-soak/local}" \
   SOAK_FIXTURE="$work/$tag.fixture.json" SOAK_SEED="$seed" SOAK_MODE="$mode" SOAK_OUT="$out/run" \
   "$here/with-stack-env.sh" timeout 1800 node_modules/.bin/vitest run src/soak.soak.ts --silent=false >"$out/vitest.out" 2>&1
 rc=$?
 set -e
 finished="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+kill "$(cat "$work/$tag.hub.pid")" 2>/dev/null || true
 kill "$(cat "$work/$tag.gw.pid")" 2>/dev/null || true
 cp "$work/$tag.gw.log" "$out/gw.log" 2>/dev/null || true
 python3 -I -c "

@@ -14,7 +14,7 @@ describe("smoke: configuration through legal routes, then two devices converge",
     await net.sync();
     await net.setInternet(true);
     const rounds = await net.settle().catch((e) => {
-      console.log("SETTLE FAILED", String(e), "hubRounds", JSON.stringify(net.hubRounds.slice(-1)));
+      console.log("SETTLE FAILED", String(e), "hub");
       for (const d of net.devs.values()) console.log(d.fx.name, "status", JSON.stringify(d.rt.sync.status()), "hubRefusals", JSON.stringify(d.hubT.refusals.slice(0, 3)), "cloudRefusals", JSON.stringify(d.cloudT.refusals.slice(0, 3)), "holds", JSON.stringify(d.cloudT.holds.slice(0, 3)), "calls", JSON.stringify(d.hubT.calls), JSON.stringify(d.cloudT.calls));
       return -1;
     });

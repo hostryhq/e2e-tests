@@ -149,7 +149,12 @@ export function paymentFirstVerdict(a: ScenarioFacts, devicePayments: TenderRow[
 
 // ---- S2: cumulative over-credit (H2) ------------------------------------------------------------------------------------------------------
 
-export const OVER_CREDIT = /credit.*(exceed|over)|over.?credit/i;
+/** The exception kinds svc-billing emits (api-specs-p2 17de74f): matched exactly, no longer by pattern. */
+export const BILLING_EXCEPTION_KINDS = [
+  "credit_exceeds_bill", "duplicate_number", "rebill_after_payment", "rebill_allowance_exceeded", "rebill_value_reduced",
+  "rebill_value_reduction_over_allowance", "rebill_value_reduction_repeated", "comp_allowance_exceeded",
+] as const;
+export const OVER_CREDIT = /^credit_exceeds_bill$/;
 
 /**
  * Output tax the credit notes may take off: per bill, its tax times the credited share (capped at the whole bill). Two full notes on one bill
@@ -227,7 +232,7 @@ export function duplicateDocumentVerdict(s: ScenarioFacts, gatewayRowsOfSecondOp
   check(refused.length >= 1 && refused.every((r) => r.status !== "accepted"), `the gateway refused the second op as duplicate_document (${refused[0]?.status})`, gatewayRowsOfSecondOp.length === 0 ? "the gateway holds no row of the second op" : `the gateway did not refuse the second op as duplicate_document: ${JSON.stringify(gatewayRowsOfSecondOp)}`);
   const holders = billing.bills.filter((b) => b.number === d!.number);
   const ids = holders.map((b) => b.id);
-  const dupExc = billing.exceptions.filter((e) => /duplicate/i.test(e.kind) && open(e));
+  const dupExc = billing.exceptions.filter((e) => /^duplicate_number$/.test(e.kind) && open(e));
   const firstKeeps = ids.length === 1 && ids[0] === d!.firstBillId;
   const bothButSaid = ids.length === 2 && ids.includes(d!.firstBillId) && ids.includes(d!.secondBillId) && dupExc.length >= 1;
   check(firstKeeps || bothButSaid, firstKeeps ? "billing kept the number with the first bill only" : "billing holds both bills and reports a duplicate exception", `billing holds ${ids.length} bill(s) with ${d!.number} (${JSON.stringify(ids.map((i) => (i === d!.firstBillId ? "first" : i === d!.secondBillId ? "second" : "other")))}) and ${dupExc.length} duplicate exception(s)`);
@@ -254,7 +259,8 @@ export function fakeApprovalVerdict(s: ScenarioFacts, gatewayRows: GatewayOpRow[
 
 /** Device refusals that name the rule (a re-bill of a paid bill, or a needed approval); a missing permission does not count. */
 export const REBILL_REFUSAL_CODES = ["refused", "approval_needed"];
-export const REBILL_DETECTOR = /rebill|allowance/i;
+/** Ruling 8: a re-bill of a bill that carries a payment is `rebill_after_payment`. */
+export const REBILL_DETECTOR = /^rebill_after_payment$/;
 
 /**
  * Ruling 8: a re-bill of a bill that carries a payment is refused on the device without approval, or, if it was made, billing flags it.

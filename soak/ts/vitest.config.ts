@@ -13,6 +13,7 @@ const APP = resolve(process.env.SOAK_APP_DIR ?? resolve(__dirname, "../../../app
 export default defineConfig({
   cacheDir: resolve(process.env.TMPDIR ?? "/tmp", `hostry-soak-vite-${fx.outlet_id}`),
   server: { fs: { allow: [APP, resolve(APP, ".."), resolve(__dirname, "../..")] } },
+  define: { __HOSTRY_TARGET__: JSON.stringify("browser"), __HOSTRY_RELEASE__: "false" },
   test: {
     environment: "node",
     include: ["src/**/*.soak.ts"],
