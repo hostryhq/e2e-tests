@@ -391,7 +391,19 @@ func init() {
 		// look at the approval of an override intent and flags the op permission_flag, and every sync.op.flagged event blocks the orders and billing consumers
 		// (findings F17, F14). The approval flow itself (proof, record) still runs.
 		"bill.discount.over_limit", "bill.line.comp")
+	if os.Getenv("SOAK_CASHIER_STRICT") == "1" { // the role as the app's templates have it: only managers hold the two override permissions
+		cashier = cashier[:len(cashier)-2]
+	}
 	manager := append(append([]string{}, cashier...), "order.line.cancel", "bill.credit_note.create", "bill.rebill", "bill.cancel",
 		"payment.refund", "day.close", "shift.close.any", "bill.manual_entry", "report.view.day", "report.view.outlet", "floor.manage", "menu.manage", "menu.price.edit", "settings.outlet.edit")
+	have := map[string]bool{}
+	for _, p := range manager {
+		have[p] = true
+	}
+	for _, p := range []string{"bill.discount.over_limit", "bill.line.comp"} {
+		if !have[p] {
+			manager = append(manager, p)
+		}
+	}
 	rolePerms["waiter"], rolePerms["cashier"], rolePerms["manager"] = waiter, cashier, manager
 }
