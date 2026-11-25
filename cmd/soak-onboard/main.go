@@ -11,6 +11,7 @@ package main
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -26,6 +27,7 @@ import (
 	"time"
 
 	"github.com/hostryhq/e2e-tests/internal/hx"
+	"golang.org/x/crypto/argon2"
 )
 
 func must(r hx.Resp, what string, want ...int) hx.Resp {
@@ -109,11 +111,15 @@ func env(k string) string {
 }
 
 type device struct {
-	ID     string           `json:"id"`
-	Kind   string           `json:"kind"`
-	Name   string           `json:"name"`
-	Series []map[string]any `json:"series"`
-	Pack   map[string]any   `json:"pack_claims,omitempty"`
+	ID      string           `json:"id"`
+	Kind    string           `json:"kind"`
+	Name    string           `json:"name"`
+	Series  []map[string]any `json:"series"`
+	Pack    map[string]any   `json:"pack_claims,omitempty"`
+	PackJWS string           `json:"pack_jws,omitempty"`
+	Kid     string           `json:"kid"`
+	Pub     string           `json:"pub"`
+	PKCS8   string           `json:"pkcs8"`
 }
 
 func main() {
@@ -197,7 +203,7 @@ func main() {
 		"name":             *name,
 		"outlet":           map[string]any{"name": *name + " Main", "kind": "restaurant", "state_code": "33"},
 		"tax_registration": map[string]any{"legal_name": *name + " Pvt Ltd", "regime": "regular", "gstin": gst},
-		"owner":            map[string]any{"name": "Owner", "mobile_e164": *mobile},
+		"owner":            map[string]any{"name": "Anand", "mobile_e164": *mobile},
 	}
 	r = must(mut("POST", "/v1/organisations", form), "createOrganisation", 201)
 	m := r.Map()
@@ -229,6 +235,14 @@ func main() {
 	mb := tc.Post("/v1/manual-book-series", map[string]any{"tax_registration_id": regID, "code": "MB1", "outlet_ids": []string{outletID}}, "Idempotency-Key", hx.NewID())
 	fmt.Printf("registerManualBookSeries MB1: HTTP %d %s\n", mb.Status, strings.TrimSpace(string(mb.Body)[:min(len(mb.Body), 160)]))
 
+	// Roles: the restaurant templates of app-restaurant (fixtures/demo-pack.ts ROLE_PERMS) as identity roles.
+	roleIDs := map[string]string{}
+	for _, rn := range []string{"waiter", "cashier", "manager"} {
+		rid := hx.NewID()
+		must(oc.Post("/v1/roles", map[string]any{"id": rid, "name": rn, "permissions": rolePerms[rn]}, "Idempotency-Key", hx.NewID()), "createRole "+rn, 201)
+		roleIDs[rn] = rid
+	}
+
 	var devices []device
 	for _, spec := range strings.Split(*devs, ",") {
 		kv := strings.SplitN(spec, ":", 2)
@@ -239,25 +253,73 @@ func main() {
 		reg := oc.Post("/v1/devices", map[string]any{"id": did, "kind": kind, "name": dname, "outlet_id": outletID, "public_key": key.JWK(),
 			"key_protection": "os-software", "nonce": nonce, "nonce_signature": key.SignRaw(nonce)}, "Idempotency-Key", hx.NewID())
 		must(reg, "registerDevice "+kind+":"+dname, 201)
-		d := device{ID: did, Kind: kind, Name: dname}
+		pk, err := x509.MarshalPKCS8PrivateKey(key.Priv)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pub := key.Priv.PublicKey
+		raw := append([]byte{4}, append(pub.X.FillBytes(make([]byte, 32)), pub.Y.FillBytes(make([]byte, 32))...)...)
+		d := device{ID: did, Kind: kind, Name: dname, Kid: deviceKID(did), Pub: base64.RawURLEncoding.EncodeToString(raw), PKCS8: base64.RawURLEncoding.EncodeToString(pk)}
 		if kind == "pos" {
 			ci := hx.New(tnURL).With("Hostry-Service-Token", identityServiceToken(os.Getenv("SOAK_STATE")+"/keys/identity.key", orgID))
 			must(ci.Post("/internal/v1/document-series-issuances", map[string]any{"outlet_id": outletID, "device_id": did, "doc_types": []string{"credit_note"}, "state": "active"}, "Idempotency-Key", hx.NewID()), "issue credit_note series", 200, 201)
 		}
-		pack := oc.Get("/v1/devices/" + did + "/offline-packs/latest")
-		if pack.Status == 200 {
-			claims, _ := pack.Map()["claims"].(map[string]any)
-			d.Pack = claims
-			if ss, ok := claims["series"].([]any); ok {
-				for _, s := range ss {
-					d.Series = append(d.Series, s.(map[string]any))
-				}
-			}
-		}
 		devices = append(devices, d)
 	}
+	if len(devices) == 0 {
+		log.Fatal("no devices")
+	}
+
+	// Staff: members with roles scoped to the outlet, each signs in once by OTP on a device key of their own to choose a PIN
+	// (setPin is the member's own call, ADR-0005 s5). The proof key the identity derives from the PIN is derived again here from the
+	// pack's salt: that is the native shell's job (H1), which this harness stands in for.
+	type staffRec struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Role string `json:"role"`
+		PIN  string `json:"pin"`
+	}
+	var staff []staffRec
+	ownerMember := ""
+	{
+		ml := oc.Get("/v1/members")
+		var lst struct {
+			Items []struct {
+				ID          string `json:"id"`
+				DisplayName string `json:"display_name"`
+			} `json:"items"`
+		}
+		_ = json.Unmarshal(ml.Body, &lst)
+		if ml.Status != 200 || len(lst.Items) == 0 {
+			log.Fatalf("listMembers: %s", ml)
+		}
+		ownerMember = lst.Items[0].ID
+	}
+	staff = append(staff, staffRec{ID: ownerMember, Name: "Anand", Role: "owner", PIN: "264097"})
+	for _, st := range []struct{ name, role, pin string }{{"Asha", "cashier", "482915"}, {"Ravi", "waiter", "539204"}, {"Meena", "manager", "718305"}} {
+		mid := hx.NewID()
+		mob := fmt.Sprintf("+9197%08d", time.Now().UnixNano()%100000000+int64(len(staff)))
+		must(oc.Post("/v1/members", map[string]any{"id": mid, "display_name": st.name, "mobile_e164": mob,
+			"role_assignments": []map[string]any{{"id": hx.NewID(), "role_id": roleIDs[st.role], "outlet_ids": []string{outletID}}}}, "Idempotency-Key", hx.NewID()), "createMember "+st.name, 201)
+		mtok := ownerLogin(idURL, mob)
+		mc := hx.New(idURL).With("Authorization", "Bearer "+mtok)
+		must(mc.Put("/v1/members/"+mid+"/pin", map[string]any{"device_id": devices[0].ID, "pin": st.pin}, "Idempotency-Key", hx.NewID()), "setPin "+st.name, 200)
+		staff = append(staff, staffRec{ID: mid, Name: st.name, Role: st.role, PIN: st.pin})
+	}
+	// The owner chooses a PIN on the first device (the owner session is the OTP session above).
+	must(oc.Put("/v1/members/"+ownerMember+"/pin", map[string]any{"device_id": devices[0].ID, "pin": "264097"}, "Idempotency-Key", hx.NewID()), "setPin Anand", 200)
+
+	// The packs as they stand now (members, PIN salts, series) and the series registry.
+	for i := range devices {
+		pack := oc.Get("/v1/devices/" + devices[i].ID + "/offline-packs/latest")
+		if pack.Status != 200 {
+			log.Fatalf("offline pack of %s: %s", devices[i].Name, pack)
+		}
+		claims, _ := pack.Map()["claims"].(map[string]any)
+		devices[i].Pack = claims
+		devices[i].PackJWS, _ = pack.Map()["jws"].(string)
+	}
 	reg := tc.Get("/v1/document-series?outlet_id=" + outletID)
-	// Series per device from the registry (the pack was read before the credit-note series were issued).
 	var regDoc struct {
 		Items []map[string]any `json:"items"`
 	}
@@ -270,12 +332,59 @@ func main() {
 			}
 		}
 	}
+	// Proof keys of every staff member, from the PIN and the salt in the pack (the shell stands in).
+	proofKeys := map[string]map[string]any{}
+	for _, m := range devices[0].Pack["members"].([]any) {
+		mm := m.(map[string]any)
+		salt, _ := mm["pin_salt"].(string)
+		pv, _ := mm["pin_v"].(float64)
+		for _, st := range staff {
+			if st.ID == mm["member_id"] && salt != "" {
+				sb, err := base64.StdEncoding.DecodeString(salt)
+				if err != nil {
+					sb, _ = base64.RawStdEncoding.DecodeString(salt)
+				}
+				proofKeys[st.ID] = map[string]any{"pin_v": pv, "proof_key": base64.StdEncoding.EncodeToString(proofKey(st.PIN, sb))}
+			}
+		}
+	}
 
 	o := map[string]any{"tenant_id": orgID, "brand_id": brandID, "outlet_id": outletID, "registration_id": regID, "gstin": gst,
-		"owner_mobile": *mobile, "owner_access_token": access, "devices": devices, "document_series_raw": json.RawMessage(reg.Body)}
+		"owner_mobile": *mobile, "owner_access_token": access, "devices": devices, "staff": staff, "proof_keys": proofKeys, "document_series_raw": json.RawMessage(reg.Body)}
 	raw, _ := json.MarshalIndent(o, "", "  ")
 	if err := os.WriteFile(*out, raw, 0o600); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Printf("onboarded tenant %s outlet %s with %d devices -> %s\n", orgID, outletID, len(devices), *out)
+}
+
+// deviceKID is the key id identity gives a device key (svc-identity service.DeviceKID).
+func deviceKID(id string) string {
+	t := id
+	if len(t) > 4 {
+		t = t[len(t)-4:]
+	}
+	return "dev-" + t + "-1"
+}
+
+// proofKey is the PIN-derived proof key (ADR-0005 s5): HKDF-SHA256 over Argon2id(pin, salt, t=2, m=19 MiB, p=1), info
+// "hostry/pin/proof/v1". The native shell does this on a device; identity does the same to verify (H1: no shell yet).
+func proofKey(pin string, salt []byte) []byte {
+	s := argon2.IDKey([]byte(pin), salt, 2, 19*1024, 1, 32)
+	k, err := hkdf.Key(sha256.New, s, nil, "hostry/pin/proof/v1", 32)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return k
+}
+
+var rolePerms = map[string][]string{}
+
+func init() {
+	waiter := []string{"order.create", "order.edit", "bill.request", "bill.present", "bill.new", "bill.split", "order.items.move", "order.table.move", "kot.handover", "menu.availability.set"}
+	cashier := append(append([]string{}, waiter...), "bill.finalize", "payment.record", "bill.discount.apply", "bill.service_charge.remove", "bill.customer_details.edit",
+		"order.table.merge", "bill.merge", "shift.open", "shift.close", "drawer.cash_move", "drawer.open_no_sale", "kot.reprint", "kds.bump", "bill.reprint")
+	manager := append(append([]string{}, cashier...), "order.line.cancel", "bill.discount.over_limit", "bill.line.comp", "bill.credit_note.create", "bill.rebill", "bill.cancel",
+		"payment.refund", "day.close", "shift.close.any", "bill.manual_entry", "report.view.day", "report.view.outlet", "floor.manage", "menu.manage", "menu.price.edit", "settings.outlet.edit")
+	rolePerms["waiter"], rolePerms["cashier"], rolePerms["manager"] = waiter, cashier, manager
 }
