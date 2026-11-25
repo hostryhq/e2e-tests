@@ -568,7 +568,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
       dd.snapshot = orig as never;
       st.transact = origTx as never;
     }
-    const code = a09.fx.series.find((s) => s.docType === "tax_invoice")!.code;
+    const code = a09.fx.series.find((s) => s.doc_type === "tax_invoice")!.code;
     const mine = ((await a09.rt.engine.rows("bill")) as Array<{ id: string; number: string }>).filter((b) => b.number.startsWith(`${code}/`)).sort((a, b) => (a.number < b.number ? -1 : 1));
     const last = mine[mine.length - 1];
     if (!last) throw new Error(`the wrong-tax bill was not recorded (${printError})`);

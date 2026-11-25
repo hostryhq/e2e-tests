@@ -87,6 +87,26 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     const uniq = new Set(hashes.map((h) => h[1]));
     const which = heldTotal > 0 ? `acceptedStateHash (${heldTotal} ops held on ${heldN.filter((h) => h[1] > 0).map((h) => `${h[0]}:${h[1]}`).join(",")})` : "stateHash (no op held)";
     t.ok(uniq.size === 1, `${devs.length} devices hold one ${which} ${[...uniq][0]!.slice(0, 16)}…`, `${which} differ: ${JSON.stringify(hashes.map((h) => [h[0], h[1].slice(0, 8)]))}`);
+    if (uniq.size > 1) {
+      // Which entities differ between the odd device(s) and the majority: row ids and content, so the cause is in the report.
+      const { createHash } = await import("node:crypto");
+      const names = (await import("@hostry/client-core")).restaurantRegistry().names();
+      const sig = async (d: Dev, e: string): Promise<string> => createHash("sha256").update(JSON.stringify(((await d.rt.engine.rows(e)) as R[]).map((r) => [r.id, r]).sort((a, b) => (a[0] < b[0] ? -1 : 1)))).digest("hex").slice(0, 8);
+      const rowsOf = async (d: Dev, e: string): Promise<number> => ((await d.rt.engine.rows(e)) as R[]).length;
+      const counts = new Map<string, number>();
+      for (const h of hashes) counts.set(h[1], (counts.get(h[1]) ?? 0) + 1);
+      const major = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]![0];
+      const ref = devs.find((d) => hashes.find((h) => h[0] === d.fx.name)![1] === major)!;
+      for (const d of devs) {
+        if (hashes.find((h) => h[0] === d.fx.name)![1] === major) continue;
+        const diff: string[] = [];
+        for (const e of names) {
+          const [a, b] = [await sig(d, e), await sig(ref, e)];
+          if (a !== b) diff.push(`${e} (${await rowsOf(d, e)} rows vs ${await rowsOf(ref, e)} on ${ref.fx.name})`);
+        }
+        t.note(`${d.fx.name} differs from ${ref.fx.name} in: ${diff.join(", ") || "no entity row (clock or hold bookkeeping only)"}`);
+      }
+    }
     t.note(`plain stateHash groups: ${new Set(plain.map((h) => h[1])).size}; accepted groups: ${new Set(accepted.map((h) => h[1])).size}; held per device ${JSON.stringify(heldN)}`);
     const vecs = await Promise.all(devs.map((d) => d.rt.engine.vector()));
     t.ok(vecs.every((v) => eq(v, vecs[0])), "every device holds the same outlet-stream version vector", "version vectors differ between devices");
@@ -377,8 +397,8 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     const givenNo = ((await rowsOf(a07, "kot")) as R[]).find((k) => k.id === f.blackout.given)?.kot_no;
     const staleNo = ((await rowsOf(a07, "kot")) as R[]).find((k) => k.id === f.blackout.stale)?.kot_no;
     t.ok(![givenNo, staleNo].some((n) => n && kp.some((s) => s.includes(String(n)) && !/duplicate/i.test(s))), "no handed-over and no stale KOT printed as an original after power returned", "a handed-over or stale KOT printed as an original");
-    const blackoutBills = bills.filter((b) => b.number.startsWith(by("A08").fx.series?.[0]?.code ?? "~")).length;
-    t.ok(blackoutBills > 0, `bills finalised on the battery counter in the blackout keep their series (${by("A08").fx.series?.[0]?.code}: gapless per T3) and their original print exists (T6)`, "no bill was finalised in the blackout");
+    const blackoutBills = bills.filter((b) => b.number.startsWith(by("A08").fx.series?.find((s) => s.doc_type === "tax_invoice")?.code ?? "~")).length;
+    t.ok(blackoutBills > 0, `bills finalised on the battery counter in the blackout keep their series (${by("A08").fx.series?.find((s) => s.doc_type === "tax_invoice")?.code}: gapless per T3) and their original print exists (T6)`, "no bill was finalised in the blackout");
     t.ok((f.blackout.settleRounds ?? 99) <= 12, `nodes converged ${f.blackout.settleRounds} rounds (5 s virtual each, ${f.blackout.settleWallMs} ms wall) after the LAN returned: within 60 s`, `convergence after the power returned took ${f.blackout.settleRounds} rounds`);
     const manual = bills.filter((b) => b.number === f.blackout.bookNumber);
     t.ok(f.blackout.bookEntriesMade === 2 && manual.length === 1, `the paper page typed twice (${f.blackout.bookEntriesMade} entries) is ${manual.length} bill: ${f.blackout.bookNumber}`, `the page typed ${f.blackout.bookEntriesMade} times produced ${manual.length} bill row(s)`);

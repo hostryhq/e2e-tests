@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { HttpTransport, KeyRing, SchemaRegistry, SoftwareSigner, TransportError, bearerAuth, lanAuth, type CredentialEnvelope, type SyncTransport, type SeriesGrant } from "@hostry/client-core";
@@ -64,13 +64,17 @@ export class HarnessProver implements PinProver {
     const k = this.key(i.memberId, i.pin, i.pinV);
     return k ? hmacB64u(k, ["session", i.sid, i.deviceId, i.memberId, i.packV, i.pinV, canonTime(i.openedAt)].join("|")) : undefined;
   }
+  /** The approval records the prover made proofs for, by approval id: the record `approval.grant` must carry (see the wrapper in SoakNet.add). */
+  readonly records = new Map<string, { approver: string; permission: string; requester: string; action_hash: string; target: string; reason: string }>();
   async approvalProof(i: ApprovalProofInput): Promise<string | undefined> {
     const k = this.key(i.approverId, i.pin, i.pinV);
-    // identity binds the action hash, target and reason of the approval record into the proof (ADR-0005 A3.1); the app's input has
-    // none of the three, so they are empty here (reported: the proof can only verify if the record is empty too).
-    return k
-      ? hmacB64u(k, [["approval", "", i.deviceId, i.approverId, i.packV, i.pinV].join("|"), i.approvalId, i.permission, quote(""), i.requesterId, canonTime(i.at), quote("")].join("|"))
-      : undefined;
+    if (!k) return undefined;
+    // identity binds the action hash, target and reason of the approval record into the proof (ADR-0005 A3.1) and the gateway reads them from
+    // an `approval` record on the op. The app has none of the three and records no `approval` record, so the harness defines the record:
+    // the action hash is the SHA-256 of "permission|requester|approval id" (the gateway never recomputes it), target and reason are empty.
+    const action_hash = createHash("sha256").update(`${i.permission}|${i.requesterId}|${i.approvalId}`).digest("hex");
+    this.records.set(i.approvalId, { approver: i.approverId, permission: i.permission, requester: i.requesterId, action_hash, target: "", reason: "" });
+    return hmacB64u(k, [["approval", action_hash, i.deviceId, i.approverId, i.packV, i.pinV].join("|"), i.approvalId, i.permission, quote(""), i.requesterId, canonTime(i.at), quote("")].join("|"));
   }
 }
 
@@ -78,8 +82,9 @@ export class HarnessProver implements PinProver {
 export function packOf(fx: Fixture, d: FxDevice): DevicePack {
   const c = d.pack;
   const roleOf = new Map(fx.staff.map((x) => [x.id, x.role]));
-  const grants: SeriesGrant[] = d.series.map((x) => ({ code: x.code, docType: x.doc_type as SeriesGrant["docType"], state: x.status as SeriesGrant["state"], seriesId: x.id }));
-  const invoice = d.series.find((x) => x.doc_type === "tax_invoice");
+  const own = d.series ?? [];
+  const grants: SeriesGrant[] = own.map((x) => ({ code: x.code, docType: x.doc_type as SeriesGrant["docType"], state: x.status as SeriesGrant["state"], seriesId: x.id }));
+  const invoice = own.find((x) => x.doc_type === "tax_invoice");
   return {
     tenantId: fx.tenant_id,
     brandId: fx.brand_id,
@@ -251,11 +256,12 @@ export class SoakNet {
       `lan:${name}`,
     );
     const cloudT = new GatedTransport(new HttpTransport({ baseUrl: this.fx.cloud_url, auth: bearerAuth(() => this.ctl.token(d.device_id)) }), net, `net:${name}`);
+    const prover = new HarnessProver(this.fx);
     const rt = await createRuntime({
       now: devNow,
       ...(o.store ? { store: o.store } : {}),
       pack: packOf(this.fx, d),
-      prover: new HarnessProver(this.fx),
+      prover,
       signer,
       upstream: { hub: hubT, cloud: cloudT, verifier: this.ring },
     });
@@ -269,7 +275,9 @@ export class SoakNet {
       const spec =
         spec0.intent === "session.open" && spec0.sid && !process.env.SOAK_NO_SESSION_RECORD && !spec0.actor?.startsWith("device:")
           ? { ...spec0, build: () => [{ e: "session", id: spec0.sid as string, k: "insert" as const, f: { type: "pin" } }] }
-          : spec0;
+          : spec0.intent === "approval.grant" && spec0.approval && !process.env.SOAK_NO_SESSION_RECORD && prover.records.has(spec0.approval)
+            ? { ...spec0, build: () => [{ e: "approval", id: spec0.approval as string, k: "insert" as const, f: { ...prover.records.get(spec0.approval as string)! } }] }
+            : spec0;
       const op = await record(spec);
       opLog.push({ intent: spec.intent, origin: op.origin, stream: op.stream, seq: op.seq });
       return op;
@@ -295,7 +303,7 @@ export class SoakNet {
     if (d.kind === "kds" && !o.store && !process.env.SOAK_NO_SESSION_RECORD) {
       // HARNESS ADDITION (finding F6 wire-up): a device session has its own `session.open` of type device (protocol-v1, "Attribution of
       // device-session ops"); the app opens none for a KDS, so its ops would be `actor_unknown`.
-      await rt.writer.record({ intent: "session.open", actor: `device:${d.device_id}`, sid: "s-device", build: () => [{ e: "session", id: "s-device", k: "insert" as const, f: { type: "device" } }] });
+      await rt.engine.record({ intent: "session.open", actor: `device:${d.device_id}`, sid: "s-device", build: () => [{ e: "session", id: "s-device", k: "insert" as const, f: { type: "device" } }] });
     }
     if (o.openDay) {
       const day = await rt.identity.signIn(this.S("Meena").id, this.S("Meena").pin);
