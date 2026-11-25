@@ -109,7 +109,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
 
   // --- Cast. The first device holds nothing: configuration is published through the legal routes below. ---
   const a07 = await net.add("A07");
-  const a08 = await net.add("A08");
+  const a08 = await net.add("A08", { offsetMs: 7 * 60_000 });
   const a09 = await net.add("A09");
   const caps = [await net.add("B3K"), await net.add("B4K"), await net.add("B5K", { offsetMs: 7 * 60_000 })]; // B5K's clock runs seven minutes fast
   const kitchen = await net.add("K9K");
@@ -428,6 +428,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     const [stale] = await T.sendKot(cap0.rt.ctx, t3.checkId);
     cap0.rt.fakes.hub.remove(KITCHEN_PRINTER, stale!);
     f.blackout.stale = stale;
+    // (T13 needs a ticket older than 15 minutes; the virtual day cannot run that far ahead of the real hub, see Clock: not exercised)
     clock.minutes(20); // the stale ticket is 21 minutes old when the LAN returns (the station holds tickets older than 15)
     await T.addLine(cap0.rt.ctx, t3.checkId, { itemId: "it-vada", qtyMilli: 1000 });
     const [recent] = await T.sendKot(cap0.rt.ctx, t3.checkId);
@@ -456,6 +457,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   });
   clock.minutes(1);
   log("POWER RETURNS");
+  clock.lead = 5 * 60_000;
   net.lan(true);
   await net.ctl.hub("start");
   a07.powered = true;

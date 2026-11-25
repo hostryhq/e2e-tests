@@ -122,11 +122,11 @@ export async function midDayScenarios(env: StepEnv): Promise<void> {
   });
 }
 
-/** S4 (H4): B5K's clock is seven minutes fast. It issues a bill that the closing counter holds BEFORE it closes; no virtual time passes before the close. */
+/** S4 (H4): A08 (a billing till; a waiter has no invoice series in the real pack) has a clock seven minutes fast. It issues a bill that the closing counter holds BEFORE it closes; no virtual time passes before the close. */
 export async function fastClockBill(env: StepEnv): Promise<void> {
   const { net, scn } = env;
   await env.step("S4 bill from the fast-clock device, held by the closing counter", async () => {
-    const b5k = net.dev("B5K");
+    const b5k = net.dev("A08");
     const a07 = net.dev("A07");
     const t = await sale(env, b5k, 1);
     const b = await env.pay(b5k, t);
@@ -139,7 +139,7 @@ export async function fastClockBill(env: StepEnv): Promise<void> {
       for (const d of [b5k, a07]) await d.rt.sync.syncNow().catch(() => undefined);
       held = ((await a07.rt.engine.vector())[op.origin] ?? 0) >= op.seq;
     }
-    const offsetMs = net.offsets.get("B5K") ?? 0;
+    const offsetMs = net.offsets.get("A08") ?? 0;
     scn.fastClock = { billId: b.billId, op: { origin: op.origin, seq: op.seq }, offsetMs, atMs: net.clock.ms + offsetMs, closeMs: net.clock.ms, heldByCloser: held };
   });
 }

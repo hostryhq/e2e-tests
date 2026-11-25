@@ -630,6 +630,9 @@
    "refund_tender": {
     "pii": false
    },
+   "replacement_total_paise": {
+    "pii": false
+   },
    "round_off_paise": {
     "pii": false
    },

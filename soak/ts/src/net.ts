@@ -103,6 +103,8 @@ const WALL_LEAD_MS = 5 * 60_000;
 
 /** Deterministic virtual clock, pushed to the gateway and hub before every sync round (they read the same time). */
 export class Clock {
+  /** How far ahead of the wall clock the virtual day may run; raised for the blackout step only (T13 needs a 21-minute-old ticket). */
+  lead = WALL_LEAD_MS;
   constructor(public ms: number) {}
   now = (): number => this.ms;
   /**
@@ -112,7 +114,7 @@ export class Clock {
    * the hybrid clock's counter still orders the operations). Run 4 compressed hours freely because its hub took the virtual time.
    */
   advance(ms: number): void {
-    this.ms = Math.max(this.ms, Math.min(this.ms + ms, Date.now() + WALL_LEAD_MS));
+    this.ms = Math.max(this.ms, Math.min(this.ms + ms, Date.now() + this.lead));
   }
   minutes(n: number): void {
     this.advance(n * 60_000);
