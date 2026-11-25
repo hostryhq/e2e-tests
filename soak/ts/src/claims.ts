@@ -116,6 +116,22 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
         t.note(`${d.fx.name} differs from ${ref.fx.name} in: ${diff.join(", ") || "no entity row (clock or hold bookkeeping only)"}`);
       }
     }
+    if (uniq.size > 1) {
+      // The same comparison with the values of personal fields (customer_*) left out of every row: is that all that differs?
+      const { createHash } = await import("node:crypto");
+      const names = (await import("@hostry/client-core")).restaurantRegistry().names();
+      const neutral = await Promise.all(
+        devs.map(async (d) => {
+          const h = createHash("sha256");
+          for (const e of names) {
+            const rows = ((await d.rt.engine.rows(e)) as R[]).map((r) => Object.fromEntries(Object.entries(r).filter(([k]) => !k.startsWith("customer_")))).sort((a, b) => (a.id < b.id ? -1 : 1));
+            h.update(e + JSON.stringify(rows));
+          }
+          return [d.fx.name, h.digest("hex").slice(0, 8)] as const;
+        }),
+      );
+      t.note(`rows compared with the customer_* values left out: ${new Set(neutral.map((n) => n[1])).size === 1 ? "all devices equal" : "still differ: " + JSON.stringify(neutral)}`);
+    }
     t.note(`plain stateHash groups: ${new Set(plain.map((h) => h[1])).size}; accepted groups: ${new Set(accepted.map((h) => h[1])).size}; held per device ${JSON.stringify(heldN)}`);
     const vecs = await Promise.all(devs.map((d) => d.rt.engine.vector()));
     t.ok(vecs.every((v) => eq(v, vecs[0])), "every device holds the same outlet-stream version vector", "version vectors differ between devices");

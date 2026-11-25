@@ -23,6 +23,11 @@ describe(`trading-day soak, seed ${seed}, number_at=${mode}`, () => {
     if (istHour < 6 || istHour > 19.5) throw new Error(`the soak starts at wall-clock time; run it between 06:00 and 19:30 IST (now ${istHour.toFixed(1)} IST)`);
     const clock = new Clock(d0.getTime());
     const date = new Date(d0.getTime() + 5.5 * 3_600_000).toISOString().slice(0, 10);
+    // HARNESS ADDITION (finding F21): billing learns its organisations from tenancy's `tenancy.organisation.created` event, but api-specs lists
+    // only identity as its subscriber, so the bus account of billing cannot read it and `known_tenants` stays empty: the Z revision sweep
+    // (SealRevisions) never runs for any organisation. The organisation is registered the way RecordOrganisation would, by SQL on billing's
+    // own table. SOAK_NO_KNOWN_TENANT=1 runs without it.
+    if (!process.env.SOAK_NO_KNOWN_TENANT) psql("billing", `insert into known_tenants (tenant_id, added_at) values ('${fx.tenant_id}', now()) on conflict do nothing`);
     const net = await SoakNet.create(fx, clock);
     const svc = new Svc({ billing: process.env.SOAK_BILLING_URL!, orders: process.env.SOAK_ORDERS_URL!, outlet: fx.outlet_id, mobile: onboard.owner_mobile });
     const t0 = Date.now();

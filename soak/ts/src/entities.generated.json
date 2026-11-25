@@ -25,7 +25,7 @@
     "pii": false
    },
    "customer_gstin": {
-    "pii": false
+    "pii": true
    },
    "customer_name": {
     "pii": true
@@ -469,7 +469,7 @@
     "pii": false
    },
    "customer_gstin": {
-    "pii": false
+    "pii": true
    },
    "customer_name": {
     "pii": true
@@ -727,6 +727,9 @@
     "pii": false
    },
    "cutoff": {
+    "pii": false
+   },
+   "cutoff_at": {
     "pii": false
    },
    "discount_paise": {
