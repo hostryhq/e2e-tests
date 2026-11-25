@@ -1,3 +1,4 @@
+import { serviceToken } from "./config";
 import { detect, seriesGaps, type BillRow, type CreditNoteRow } from "@hostry/client-core";
 import { compareDigests, deviceDigest } from "./digest";
 import type { Facts } from "./day";
@@ -75,9 +76,18 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
   // ---- T1 convergence ----
   {
     const t = mk("T1", "Convergence");
-    const hashes = await Promise.all(devs.map(async (d) => [d.fx.name, await d.rt.engine.stateHash()] as const));
+    // ADR-0002 A1.2 / RB3: a device applies its own ops locally while the cloud holds some of them (quarantine); its peers then hold
+    // placeholders, so the plain hash differs by design. While any op is held, convergence is judged on acceptedStateHash() (the state
+    // without the device's own held ops); with nothing held, on the plain stateHash().
+    const heldN = devs.map((d) => [d.fx.name, d.rt.engine.heldOps().length] as const);
+    const heldTotal = heldN.reduce((n, h) => n + h[1], 0);
+    const plain = await Promise.all(devs.map(async (d) => [d.fx.name, await d.rt.engine.stateHash()] as const));
+    const accepted = await Promise.all(devs.map(async (d) => [d.fx.name, await d.rt.engine.acceptedStateHash()] as const));
+    const hashes = heldTotal > 0 ? accepted : plain;
     const uniq = new Set(hashes.map((h) => h[1]));
-    t.ok(uniq.size === 1, `${devs.length} devices hold one state hash ${[...uniq][0]!.slice(0, 16)}…`, `state hashes differ: ${JSON.stringify(hashes.map((h) => [h[0], h[1].slice(0, 8)]))}`);
+    const which = heldTotal > 0 ? `acceptedStateHash (${heldTotal} ops held on ${heldN.filter((h) => h[1] > 0).map((h) => `${h[0]}:${h[1]}`).join(",")})` : "stateHash (no op held)";
+    t.ok(uniq.size === 1, `${devs.length} devices hold one ${which} ${[...uniq][0]!.slice(0, 16)}…`, `${which} differ: ${JSON.stringify(hashes.map((h) => [h[0], h[1].slice(0, 8)]))}`);
+    t.note(`plain stateHash groups: ${new Set(plain.map((h) => h[1])).size}; accepted groups: ${new Set(accepted.map((h) => h[1])).size}; held per device ${JSON.stringify(heldN)}`);
     const vecs = await Promise.all(devs.map((d) => d.rt.engine.vector()));
     t.ok(vecs.every((v) => eq(v, vecs[0])), "every device holds the same outlet-stream version vector", "version vectors differ between devices");
     const cloud = await a07.cloudT.hello({ protocol: 1 }).catch((e) => ({ vector: {}, err: String(e) }));
@@ -430,8 +440,13 @@ export async function erasureClaim(i: Inputs): Promise<Claim> {
   t.note(`before erasure: details present in billing ${before.billing}, orders ${before.orders}, device A07 ${devBefore}, gateway op_pii rows ${opPiiBefore}`);
   t.ok(before.billing || before.orders || devBefore, "customer details were present somewhere before the erasure (the test is meaningful)", "no service or device held the customer's details before the erasure: nothing to erase");
   const res = [];
-  for (const r of e.refs) res.push(await net.ctl.erase(r));
-  t.ok(res.every((r) => r.status === 200), `gateway erasure issued for ${res.length} op(s) (via Gateway.ErasePII: no HTTP route exists, see findings)`, `erase refused: ${JSON.stringify(res.map((r) => [r.status, r.body.slice(0, 80)]))}`);
+  {
+    // POST /internal/v1/pii/erase as billing (the route svc-sync now has; one request names every target).
+    const tok = await serviceToken("billing", "sync", i.tenant);
+    const r = await fetch(`${net.fx.cloud_url}/internal/v1/pii/erase`, { method: "POST", headers: { "content-type": "application/json", "Hostry-Service-Token": tok, "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ targets: e.refs }) });
+    res.push({ status: r.status, body: await r.text() });
+  }
+  t.ok(res.every((r) => r.status === 200), `gateway erasure issued for ${res.length} op(s) (POST /internal/v1/pii/erase as billing)`, `erase refused: ${JSON.stringify(res.map((r) => [r.status, r.body.slice(0, 80)]))}`);
   // The erasure is a cloud-signed op and an event: devices pull it, services apply the event.
   const deadline = Date.now() + 90_000;
   let after = await seen();

@@ -3,12 +3,12 @@ import { resolve } from "node:path";
 import { defineConfig, type Plugin } from "vitest/config";
 
 /**
- * The soak drives the UNMODIFIED app-restaurant domain code (runtime, data/trading) as headless devices. Two things in
- * that code are written for the demo outlet and have no configuration switch, so this build-time rewrite points them
- * at the organisation the run onboarded on the real services (both are reported as findings, nothing else is touched):
- *  1. data/seed.ts hard-codes TENANT_ID "tenant-1" and OUTLET_ID "outlet-1"; the real services issue UUIDs.
- *  2. runtime.ts opens the sync engine on the outlet stream only and routes brand and tenant intents into it; the
- *     production topology (ADR-0002 S3) is three streams (outlet, brand, tenant).
+ * The soak drives the UNMODIFIED app-restaurant domain code (runtime, data/trading) as headless devices. Tenant, outlet, device,
+ * series, staff and paper bill books now come from the device's offline pack (app-restaurant 09bf2db), so the earlier rewrites of
+ * the demo constants and of the manual-book codes are gone. One build-time rewrite remains:
+ *  - runtime.ts opens the sync engine on the outlet stream only and routes brand and tenant intents into it; the production
+ *    topology (ADR-0002 S3) is three streams (outlet, brand, tenant). The pack carries no brand or tenant stream names and the
+ *    app has no option for them, so the harness names them from the onboarded organisation (reported as a finding).
  */
 const fx = JSON.parse(readFileSync(process.env.SOAK_FIXTURE ?? "", "utf8")) as { tenant_id: string; outlet_id: string; brand_id: string };
 const APP = resolve(process.env.SOAK_APP_DIR ?? resolve(__dirname, "../../../app-restaurant"));
@@ -18,19 +18,12 @@ const rewire = (): Plugin => ({
   enforce: "pre",
   transform(code, id) {
     const p = id.replace(/\\/g, "/");
-    if (p.endsWith("/app-restaurant/src/data/seed.ts")) {
-      return code.replace('export const TENANT_ID = "tenant-1";', `export const TENANT_ID = ${JSON.stringify(fx.tenant_id)};`).replace('export const OUTLET_ID = "outlet-1";', `export const OUTLET_ID = ${JSON.stringify(fx.outlet_id)};`);
-    }
     if (p.endsWith("/app-restaurant/src/runtime.ts")) {
       const streams = JSON.stringify([`outlet:${fx.outlet_id}`, `brand:${fx.brand_id}`, `tenant:${fx.tenant_id}`]);
-      return code
-        .replace("outletStream: OUTLET_STREAM,\n    signer,", `outletStream: OUTLET_STREAM,\n    streams: ${streams},\n    signer,`)
-        .replace("{ streams: { brand: OUTLET_STREAM, tenant: OUTLET_STREAM } }", `{ streams: { brand: ${JSON.stringify("brand:" + fx.brand_id)}, tenant: ${JSON.stringify("tenant:" + fx.tenant_id)} } }`);
-    }
-    if (p.endsWith("/app-restaurant/src/data/context.ts")) {
-      // 3. The paper bill books of the outlet reach the app only as a nested billing_settings field that the entity contract
-      //    does not have (and the cloud refuses). Tenancy registered MB1 for this outlet (soak-onboard); tell the app.
-      return code.replace("manualBookCodes: billing.manual_book_codes ?? [],", 'manualBookCodes: billing.manual_book_codes ?? ["MB1"],');
+      const a = code.replace("outletStream,\n    signer,", `outletStream,\n    streams: ${streams},\n    signer,`);
+      const b = a.replace("{ streams: { brand: outletStream, tenant: outletStream } }", `{ streams: { brand: ${JSON.stringify("brand:" + fx.brand_id)}, tenant: ${JSON.stringify("tenant:" + fx.tenant_id)} } }`);
+      if (a === code || b === a) throw new Error("soak-rewire: runtime.ts no longer has the single-stream wiring this rewrite expects; remove or update the rewrite");
+      return b;
     }
     return null;
   },

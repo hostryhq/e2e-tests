@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Mutation } from "@hostry/client-core";
-import { demoRows } from "../../../../app-restaurant/src/data/seed";
+import { demoRows } from "../../../../app-restaurant/src/fixtures/demo-outlet";
 import type { Dev, Fixture, SoakNet } from "./net";
 
 /**
@@ -66,7 +66,7 @@ export type ConfigReport = { device_ops: Array<{ intent: string; ok: boolean; er
 
 /** Publish the demo outlet's configuration through legal routes; `numberAt` is the outlet's numbering mode (ADR-0014 A1.5). */
 export async function publishConfig(net: SoakNet, counter: Dev, numberAt: "settle" | "print"): Promise<ConfigReport> {
-  const rows = demoRows() as unknown as Record<string, Array<{ id: string } & Record<string, unknown>>>;
+  const rows = demoRows(net.fx.outlet_id) as unknown as Record<string, Array<{ id: string } & Record<string, unknown>>>;
   const report: ConfigReport = { device_ops: [], emits: [] };
   await counter.signIn("Anand");
   for (const [intent, entities] of DEVICE_ROUTE) {
@@ -89,7 +89,7 @@ export async function publishConfig(net: SoakNet, counter: Dev, numberAt: "settl
       return muts(r, e);
     });
     const res = await emit(net.fx, "billing", [
-      { key: `soak-config-${intent}`, stream: `${stream}:${stream === "tenant" ? net.fx.tenant_id : net.fx.outlet_id}`, intent, intent_v: 1, muts: all, pii: null, actor: "m-anand", authorised_by: by, approval: "" },
+      { key: `soak-config-${intent}`, stream: `${stream}:${stream === "tenant" ? net.fx.tenant_id : net.fx.outlet_id}`, intent, intent_v: 1, muts: all, pii: null, actor: net.S("Anand").id, authorised_by: by, approval: "" },
     ]);
     report.emits.push({ intent, status: res.status, body: res.body.slice(0, 300) });
   }

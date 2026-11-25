@@ -1,10 +1,26 @@
 import { createHmac } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { HttpTransport, KeyRing, SoftwareSigner, TransportError, bearerAuth, lanAuth, type CredentialEnvelope, type SyncTransport, type SeriesGrant } from "@hostry/client-core";
+import { HttpTransport, KeyRing, SchemaRegistry, SoftwareSigner, TransportError, bearerAuth, lanAuth, type CredentialEnvelope, type SyncTransport, type SeriesGrant } from "@hostry/client-core";
 import { OUTLET_STREAM, createRuntime, type Runtime, type RuntimeOptions } from "../../../../app-restaurant/src/runtime";
+import type { ApprovalProofInput, DevicePack, PinProver, SessionProofInput } from "../../../../app-restaurant/src/data/auth/pack";
 import { ensureDayOpen } from "../../../../app-restaurant/src/data/trading/orders";
 
-export type FxDevice = { device_id: string; kind: "pos" | "waiter" | "kds"; name: string; kid: string; pub: string; pkcs8: string; cred: CredentialEnvelope; series: SeriesGrant[] };
+/**
+ * HARNESS ADDITION (finding F15): client-core's restaurant registry has no `session` or `approval` entity, so `engine.record` refuses
+ * the `session` record the gateway needs to type a session ("record: unknown entity session"). The two are registered here as append
+ * entities (what api-specs records: [session] / [approval] says) for the soak's devices only.
+ */
+if (!process.env.SOAK_NO_SESSION_RECORD) {
+  const orig = SchemaRegistry.prototype.get;
+  SchemaRegistry.prototype.get = function (this: SchemaRegistry, entity: string) {
+    return orig.call(this, entity) ?? (entity === "session" || entity === "approval" ? { name: entity, policy: "append" } : undefined);
+  };
+}
+
+export type FxSeries = { id: string; code: string; doc_type: string; status: string };
+export type FxDevice = { device_id: string; kind: "pos" | "waiter" | "kds"; name: string; kid: string; pub: string; pkcs8: string; cred: CredentialEnvelope; series: FxSeries[]; pack: Record<string, any> };
+export type Staff = { id: string; name: "Asha" | "Ravi" | "Meena" | "Anand"; role: string; pin: string };
 export type Fixture = {
   tenant_id: string;
   outlet_id: string;
@@ -16,9 +32,68 @@ export type Fixture = {
   cloud_url: string;
   hub_url: string;
   ctl_url: string;
+  staff: Staff[];
+  proof_keys: Record<string, { pin_v: number; proof_key: string }>;
 };
 
-export const loadFixture = (path = process.env.SOAK_FIXTURE ?? ""): Fixture => JSON.parse(readFileSync(path, "utf8")) as Fixture;
+/** The fixture of soakgw (devices, LAN credentials) plus the onboarding output (staff, PINs, proof keys). */
+export const loadFixture = (path = process.env.SOAK_FIXTURE ?? ""): Fixture => {
+  const fx = JSON.parse(readFileSync(path, "utf8")) as Fixture;
+  const ob = JSON.parse(readFileSync(process.env.SOAK_ONBOARD ?? "", "utf8")) as { staff: Staff[]; proof_keys: Fixture["proof_keys"] };
+  return { ...fx, staff: ob.staff, proof_keys: ob.proof_keys };
+};
+
+const canonTime = (iso: string): string => new Date(iso).toISOString(); // UTC, milliseconds, like identity's canonTime
+const quote = (v: string): string => JSON.stringify(v); // strconv.Quote for the ASCII text of the harness
+const hmacB64u = (key: Buffer, msg: string): string => createHmac("sha256", key).update(msg).digest("base64url");
+
+/**
+ * Stands in for the native shell's PIN prover (H1: it needs the shell, so the app has only a fixture HMAC): checks the PIN of
+ * the staff list and makes identity's REAL proofs with the proof key the onboarding derived from the PIN and the pack's salt
+ * (ADR-0005 s5, s7, s8: HMAC-SHA256 over the message identity builds, base64url).
+ */
+export class HarnessProver implements PinProver {
+  constructor(private readonly fx: Fixture) {}
+  private key(memberId: string, pin: string, pinV: number): Buffer | undefined {
+    const st = this.fx.staff.find((x) => x.id === memberId);
+    const pk = this.fx.proof_keys[memberId];
+    if (!st || st.pin !== pin || !pk || pk.pin_v !== pinV) return undefined;
+    return Buffer.from(pk.proof_key, "base64");
+  }
+  async sessionProof(i: SessionProofInput): Promise<string | undefined> {
+    const k = this.key(i.memberId, i.pin, i.pinV);
+    return k ? hmacB64u(k, ["session", i.sid, i.deviceId, i.memberId, i.packV, i.pinV, canonTime(i.openedAt)].join("|")) : undefined;
+  }
+  async approvalProof(i: ApprovalProofInput): Promise<string | undefined> {
+    const k = this.key(i.approverId, i.pin, i.pinV);
+    // identity binds the action hash, target and reason of the approval record into the proof (ADR-0005 A3.1); the app's input has
+    // none of the three, so they are empty here (reported: the proof can only verify if the record is empty too).
+    return k
+      ? hmacB64u(k, [["approval", "", i.deviceId, i.approverId, i.packV, i.pinV].join("|"), i.approvalId, i.permission, quote(""), i.requesterId, canonTime(i.at), quote("")].join("|"))
+      : undefined;
+  }
+}
+
+/** The pack the native shell would hand the app, from the signed pack claims identity issued to the device plus tenancy's series ids. */
+export function packOf(fx: Fixture, d: FxDevice): DevicePack {
+  const c = d.pack;
+  const roleOf = new Map(fx.staff.map((x) => [x.id, x.role]));
+  const grants: SeriesGrant[] = d.series.map((x) => ({ code: x.code, docType: x.doc_type as SeriesGrant["docType"], state: x.status as SeriesGrant["state"], seriesId: x.id }));
+  const invoice = d.series.find((x) => x.doc_type === "tax_invoice");
+  return {
+    tenantId: fx.tenant_id,
+    brandId: fx.brand_id,
+    outletId: fx.outlet_id,
+    deviceId: d.device_id,
+    deviceKind: d.kind,
+    deviceCode: invoice?.code ?? d.name,
+    packV: c.pack_v,
+    expiresAt: c.offline_valid_until,
+    series: grants,
+    members: (c.members as any[]).map((m) => ({ memberId: m.member_id, displayName: m.display_name, role: roleOf.get(m.member_id) ?? "member", perms: m.permissions, pinV: m.pin_v ?? 1 })),
+    manualBooks: ((c.manual_books as any[]) ?? []).map((b) => b.code),
+  };
+}
 
 /** Deterministic virtual clock, pushed to the gateway and hub before every sync round (they read the same time). */
 export class Clock {
@@ -103,20 +178,20 @@ export class Ctl {
     return this.post(`/soak/hub?op=${op}`);
   }
   /** One hub round with the cloud; resolves to null while the internet is cut or the hub is down. */
-  async hubSync(): Promise<{ pushed: number; pulled: number; refused: number; epoch_changed: boolean } | null> {
+  async hubSync(): Promise<{ pushed: number; pulled: number; refused: number; epoch_changed: boolean; refusals?: unknown[] } | null> {
     const r = await fetch(`${this.url}/soak/hub?op=sync`, { method: "POST" });
     if (!r.ok) return null;
-    return (await r.json()) as { pushed: number; pulled: number; refused: number; epoch_changed: boolean };
+    return (await r.json()) as { pushed: number; pulled: number; refused: number; epoch_changed: boolean; refusals?: unknown[] };
   }
-  gateway(op: "down" | "up" | "restart"): Promise<void> {
-    return this.post(`/soak/gateway?op=${op}`);
+  /** The real gateway process, stopped or started by the stack script (up-full.sh stop|start|restart sync). */
+  async gateway(op: "down" | "up" | "restart"): Promise<void> {
+    const verb = op === "down" ? "stop" : op === "up" ? "start" : "restart";
+    execFileSync("bash", [`${process.env.SOAK_SCRIPTS ?? "/mnt/d/40_Projects/Ventures/hostry-repos/e2e-tests/soak/scripts"}/stack.sh`, verb, "sync"], { stdio: "pipe" });
   }
-  async erase(ref: { origin: string; stream: string; seq: number }): Promise<{ status: number; body: string }> {
-    const r = await fetch(`${this.url}/soak/erase?origin=${encodeURIComponent(ref.origin)}&stream=${encodeURIComponent(ref.stream)}&seq=${ref.seq}`, { method: "POST" });
-    return { status: r.status, body: await r.text() };
-  }
-  epoch(id: string): Promise<void> {
-    return this.post(`/soak/gateway?op=epoch&id=${encodeURIComponent(id)}`);
+  /** A cloud restore stamps a newer restore epoch (svc-sync's dev epoch table); the gateway is restarted to read it. */
+  async epoch(id: string): Promise<void> {
+    await this.post(`/soak/epoch?id=${encodeURIComponent(id)}`);
+    await this.gateway("restart");
   }
 }
 
@@ -134,7 +209,6 @@ export type Dev = {
 };
 
 export type Name = "Asha" | "Ravi" | "Meena" | "Anand";
-const PINS = { Asha: ["m-asha", "1111"], Ravi: ["m-ravi", "2222"], Meena: ["m-meena", "3333"], Anand: ["m-anand", "4444"] } as const;
 
 /** The outlet as the soak sees it: real gateway, real hub, real HTTP, links that can be cut per device. */
 export class SoakNet {
@@ -142,10 +216,15 @@ export class SoakNet {
   readonly devs = new Map<string, Dev>();
   readonly ctl: Ctl;
   internet = false;
-  hubRounds: Array<{ pushed: number; pulled: number; refused: number; epoch_changed: boolean }> = [];
+  hubRounds: Array<{ pushed: number; pulled: number; refused: number; epoch_changed: boolean; refusals?: unknown[] }> = [];
   constructor(readonly fx: Fixture, readonly clock: Clock) {
     this.ring = new KeyRing(fx.identity_pub);
     this.ctl = new Ctl(fx.ctl_url);
+  }
+
+  /** A member of the staff by name: id and PIN. */
+  S(name: Name): Staff {
+    return this.fx.staff.find((x) => x.name === name)!;
   }
 
   static async create(fx: Fixture, clock: Clock): Promise<SoakNet> {
@@ -156,7 +235,7 @@ export class SoakNet {
   }
 
   /** Bring up one device (by fixture name). `seed` makes it hold the demo configuration, like the app's first device. */
-  async add(name: string, o: Pick<RuntimeOptions, "seed" | "store"> & { openDay?: boolean; offsetMs?: number; links?: { lan: boolean; net: boolean } } = {}): Promise<Dev> {
+  async add(name: string, o: Pick<RuntimeOptions, "store"> & { openDay?: boolean; offsetMs?: number; links?: { lan: boolean; net: boolean } } = {}): Promise<Dev> {
     const d = this.fx.devices.find((x) => x.name === name);
     if (!d) throw new Error(`no fixture device ${name}`);
     for (const p of this.fx.devices) await this.ring.add(p.device_id, p.kid, p.pub);
@@ -175,27 +254,27 @@ export class SoakNet {
     const rt = await createRuntime({
       now: devNow,
       ...(o.store ? { store: o.store } : {}),
-      seed: o.seed ?? false,
-      deviceKind: d.kind,
-      deviceCode: d.name,
-      billing: d.kind !== "kds",
-      deviceId: d.device_id,
+      pack: packOf(this.fx, d),
+      prover: new HarnessProver(this.fx),
       signer,
       upstream: { hub: hubT, cloud: cloudT, verifier: this.ring },
     });
-    // The app's StubIdentity produces no PIN-derived proof, so the gateway would void every config-class op as
-    // `proof_failed` and flag every other op `attribution_unverified`. The stub directory accepts the proof it would
-    // itself mint for (device, actor); stamp it on every op the way the auth layer is meant to (reported as a finding).
     const record = rt.engine.record.bind(rt.engine);
     const opLog: Dev["opLog"] = o.store ? (this.devs.get(name)?.opLog ?? []) : [];
-    rt.engine.record = (async (spec: Parameters<typeof record>[0]) => {
-      const actor = spec.actor ?? rt.engine.session?.actor;
-      const op = await record({ ...spec, ...(actor && actor !== "system" && !spec.proof ? { proof: stubProof(d.device_id, actor) } : {}) });
+    rt.engine.record = (async (spec0: Parameters<typeof record>[0]) => {
+      // HARNESS ADDITION (finding): the gateway reads the type of a session from the `session` record of its `session.open`
+      // (api-specs sync/intents control.yaml: records [session]; svc-sync service/session.go openedSession); app-restaurant records
+      // `session.open` with no mutation, so every PIN session would be "of an unknown type" and every actor unverified. SOAK_NO_SESSION_RECORD=1
+      // runs the app as it is.
+      const spec =
+        spec0.intent === "session.open" && spec0.sid && !process.env.SOAK_NO_SESSION_RECORD && !spec0.actor?.startsWith("device:")
+          ? { ...spec0, build: () => [{ e: "session", id: spec0.sid as string, k: "insert" as const, f: { type: "pin" } }] }
+          : spec0;
+      const op = await record(spec);
       opLog.push({ intent: spec.intent, origin: op.origin, stream: op.stream, seq: op.seq });
       return op;
     }) as typeof rt.engine.record;
-    // The series come from tenancy (through identity's pack), not from the app's demo grants.
-    if (!o.store) await rt.engine.setSeriesGrants(d.series ?? []); // a restarted device keeps the grants and counters it stored
+    const net_ = this;
     const dev: Dev = {
       fx: d,
       rt,
@@ -206,15 +285,20 @@ export class SoakNet {
       opLog,
       powered: true,
       async signIn(who) {
-        const [mid, pin] = PINS[who];
-        const r = await rt.identity.signIn(mid, pin);
+        const st = net_.S(who);
+        const r = await rt.identity.signIn(st.id, st.pin);
         if (!r.ok) throw new Error(`sign-in failed: ${r.reason}`);
         rt.setSession(r.session);
       },
     };
     this.devs.set(name, dev);
+    if (d.kind === "kds" && !o.store && !process.env.SOAK_NO_SESSION_RECORD) {
+      // HARNESS ADDITION (finding F6 wire-up): a device session has its own `session.open` of type device (protocol-v1, "Attribution of
+      // device-session ops"); the app opens none for a KDS, so its ops would be `actor_unknown`.
+      await rt.writer.record({ intent: "session.open", actor: `device:${d.device_id}`, sid: "s-device", build: () => [{ e: "session", id: "s-device", k: "insert" as const, f: { type: "device" } }] });
+    }
     if (o.openDay) {
-      const day = await rt.identity.signIn("m-meena", "3333");
+      const day = await rt.identity.signIn(this.S("Meena").id, this.S("Meena").pin);
       if (day.ok) {
         rt.setSession(day.session);
         await ensureDayOpen(rt.ctx);

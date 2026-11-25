@@ -7,5 +7,5 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$1" tag="$2"
 mkdir -p "$work"
 "$here/with-stack-env.sh" "$work/soak-onboard" -vendor-state "$work/vendor-state.json" -out "$work/$tag.onboard.json" \
-  -name "Soak $tag" -devices pos:A07,pos:A08,pos:A09,waiter:B3K,waiter:B4K,waiter:B5K,kds:K9K,kds:K8K
+  -name "Soak $tag" -devices pos:A07,pos:A08,pos:A09,waiter:B3K,waiter:B4K,waiter:B5K,kds:K9K,kds:K8K,hub:H1
 "$here/start-gw.sh" "$work/soakgw" "$work/$tag.onboard.json" "$work/$tag.fixture.json" "$work" "$work/$tag.gw.log" "$work/$tag.gw.pid" "${3:-0}"

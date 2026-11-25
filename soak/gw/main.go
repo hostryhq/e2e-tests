@@ -368,7 +368,7 @@ func main() {
 				http.Error(w, serr.Error(), 502)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"pushed": res.Pushed, "pulled": res.Pulled, "refused": res.Refused, "epoch_changed": res.EpochChanged})
+			_ = json.NewEncoder(w).Encode(map[string]any{"pushed": res.Pushed, "pulled": res.Pulled, "refused": res.Refused, "epoch_changed": res.EpochChanged, "refusals": h.LastRefused()})
 			return
 		case "stop":
 			a.stopHub()

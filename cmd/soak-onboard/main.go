@@ -340,9 +340,12 @@ func main() {
 		pv, _ := mm["pin_v"].(float64)
 		for _, st := range staff {
 			if st.ID == mm["member_id"] && salt != "" {
-				sb, err := base64.StdEncoding.DecodeString(salt)
+				// identity stores the salt as unpadded base64url (crypto.B64); the contract text says "Base64".
+				sb, err := base64.RawURLEncoding.DecodeString(salt)
 				if err != nil {
-					sb, _ = base64.RawStdEncoding.DecodeString(salt)
+					if sb, err = base64.StdEncoding.DecodeString(salt); err != nil {
+						log.Fatalf("pin_salt of %s: %v", st.Name, err)
+					}
 				}
 				proofKeys[st.ID] = map[string]any{"pin_v": pv, "proof_key": base64.StdEncoding.EncodeToString(proofKey(st.PIN, sb))}
 			}

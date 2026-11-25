@@ -1,6 +1,6 @@
 import * as T from "../../../../app-restaurant/src/data/trading";
 import { KITCHEN_PRINTER } from "../../../../app-restaurant/src/data/trading/bill-printer";
-import { OUTLET_ID } from "../../../../app-restaurant/src/data/seed";
+
 import { deviceSession } from "../../../../app-restaurant/src/runtime";
 import { ENTITIES, Snapshot } from "../../../../app-restaurant/src/data/app-data";
 import type { BillRow } from "@hostry/client-core";
@@ -68,7 +68,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     }
   };
   const list = (d: Dev) => (e: string) => d.rt.data.snapshot().list(e);
-  const dueOf = (d: Dev, checkId: string): number => T.previewCheck(list(d), OUTLET_ID, checkId, clock.now())!.c.result.total_paise;
+  const dueOf = (d: Dev, checkId: string): number => T.previewCheck(list(d), net.fx.outlet_id, checkId, clock.now())!.c.result.total_paise;
   const pay = async (d: Dev, checkId: string): Promise<{ billId: string; number: string } | undefined> => {
     const due = dueOf(d, checkId);
     const r = R.next();
@@ -86,7 +86,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     return { billId: b.billId, number: b.number };
   };
   const approve = async (d: Dev, perm: string, requester: string): Promise<string> => {
-    const ap = await d.rt.identity.approve("m-meena", "3333", perm, requester);
+    const ap = await d.rt.identity.approve(net.S("Meena").id, net.S("Meena").pin, perm, requester);
     if (!ap.ok) throw new Error(`approval ${perm}: ${ap.reason}`);
     f.approvals++;
     return ap.approvalId;
@@ -246,13 +246,13 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
           await T.present(d.rt.ctx, t.checkId);
         }
         if (i === 1) {
-          const ap = await approve(d, "bill.discount.over_limit", "m-asha");
+          const ap = await approve(d, "bill.discount.over_limit", net.S("Asha").id);
           await T.applyDiscount(d.rt.ctx, { checkId: t.checkId, kind: "percent", value: 1500, reasonCodeId: "rc-disc-complaint", approvalId: ap });
         }
         if (i === 2) {
           const lines = list(d)("order_line").filter((l) => (l as { check_id: string; status?: string }).check_id === t.checkId) as Array<{ id: string }>;
           if (lines[0]) {
-            const ap = await approve(d, "bill.line.comp", "m-asha");
+            const ap = await approve(d, "bill.line.comp", net.S("Asha").id);
             await T.compLine(d.rt.ctx, { lineId: lines[0].id, reasonCodeId: "rc-comp-owner", approvalId: ap });
           }
         }
@@ -374,7 +374,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     if (f.doublePay) {
       const pays = list(a07)("payment").filter((p) => (p as { bill_id: string }).bill_id === f.doublePay!.billId) as Array<{ id: string; amount_paise: number }>;
       const dup = pays[pays.length - 1]!;
-      const ap = await approve(a07, "payment.refund", "m-meena").catch(() => undefined);
+      const ap = await approve(a07, "payment.refund", net.S("Meena").id).catch(() => undefined);
       const r = await T.refundPayment(a07.rt.ctx, { paymentId: dup.id, amountPaise: dup.amount_paise, reasonCodeId: "rc-cn-wrong", ...(ap ? { approvalId: ap } : {}) });
       void r;
     }
@@ -501,7 +501,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   // Remaining unresolved checks (drafts without a bill) are cancelled with approval.
   await step("cancel remaining checks", async () => {
     for (const u of T.unresolvedChecks(list(a07))) {
-      const ap = await approve(a07, "bill.cancel", "m-meena").catch(() => undefined);
+      const ap = await approve(a07, "bill.cancel", net.S("Meena").id).catch(() => undefined);
       void ap;
       await T.cancelCheck(a07.rt.ctx, u.checkId, "rc-cancel-mind").catch(() => undefined);
     }
