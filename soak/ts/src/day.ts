@@ -220,11 +220,11 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   if (open.length >= 4) {
     const [t1, t2, t3, t4] = open;
     await step("split by item", async () => {
-      const lines = list(t1!.cap)("order_line").filter((l) => (l as { check_id: string }).check_id === t1!.checkId) as Array<{ id: string; qty_milli: number }>;
+      const lines = list(t1!.cap)("order_line").filter((l) => (l as unknown as { check_id: string }).check_id === t1!.checkId) as unknown as Array<{ id: string; qty_milli: number }>;
       if (lines.length >= 2) await T.splitBill(t1!.cap.rt.ctx, t1!.checkId, { [lines[0]!.id]: lines[0]!.qty_milli });
     });
     await step("move item", async () => {
-      const lines = list(t2!.cap)("order_line").filter((l) => (l as { check_id: string }).check_id === t2!.checkId) as Array<{ id: string; qty_milli: number }>;
+      const lines = list(t2!.cap)("order_line").filter((l) => (l as unknown as { check_id: string }).check_id === t2!.checkId) as unknown as Array<{ id: string; qty_milli: number }>;
       if (lines.length >= 2) await T.moveItems(t2!.cap.rt.ctx, { [lines[0]!.id]: lines[0]!.qty_milli }, { checkId: t3!.checkId });
     });
     await step("move table", async () => {
@@ -266,7 +266,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
           await T.applyDiscount(d.rt.ctx, { checkId: t.checkId, kind: "percent", value: 1500, reasonCodeId: "rc-disc-complaint", approvalId: ap });
         }
         if (i === 2) {
-          const lines = list(d)("order_line").filter((l) => (l as { check_id: string; status?: string }).check_id === t.checkId) as Array<{ id: string }>;
+          const lines = list(d)("order_line").filter((l) => (l as unknown as { check_id: string; status?: string }).check_id === t.checkId) as Array<{ id: string }>;
           if (lines[0]) {
             const ap = await approve(d, T.compBinding(lines[0].id, "rc-comp-owner"), net.S("Asha").id);
             await T.compLine(d.rt.ctx, { lineId: lines[0].id, reasonCodeId: "rc-comp-owner", approvalId: ap });
@@ -370,7 +370,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     a07.lan.up = true;
     a08.lan.up = true;
     await net.sync();
-    f.doublePay = { billId: b.billId, payments: list(a07)("payment").filter((p) => (p as { bill_id: string }).bill_id === b.billId).map((p) => (p as { id: string }).id) };
+    f.doublePay = { billId: b.billId, payments: list(a07)("payment").filter((p) => (p as unknown as { bill_id: string }).bill_id === b.billId).map((p) => (p as unknown as { id: string }).id) };
   });
   await step("seeded line on two bills", async () => {
     const t = await T.newCounterCheck(a07.rt.ctx);
@@ -382,13 +382,13 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     const b2 = await T.settle(a08.rt.ctx, t, { payments: [{ tender: "upi", amount_paise: dueOf(a08, t) }] });
     a07.lan.up = true;
     a08.lan.up = true;
-    f.race = { lineId: (list(a07)("order_line").find((l) => (l as { check_id: string }).check_id === t) as { id: string }).id, checks: [t, b1.billId, b2.billId] };
+    f.race = { lineId: (list(a07)("order_line").find((l) => (l as unknown as { check_id: string }).check_id === t) as unknown as { id: string }).id, checks: [t, b1.billId, b2.billId] };
     await net.sync();
   });
   // Closing the conflicts with compensating ops: refund the duplicate payment, credit the second bill.
   await step("close conflicts by refund and credit note", async () => {
     if (f.doublePay) {
-      const pays = list(a07)("payment").filter((p) => (p as { bill_id: string }).bill_id === f.doublePay!.billId) as Array<{ id: string; bill_id: string; amount_paise: number }>;
+      const pays = list(a07)("payment").filter((p) => (p as unknown as { bill_id: string }).bill_id === f.doublePay!.billId) as unknown as Array<{ id: string; bill_id: string; amount_paise: number }>;
       const dup = pays[pays.length - 1]!;
       const refundId = a07.rt.ctx.newId();
       const ap = await approve(a07, T.refundBinding(refundId, dup.bill_id, dup.id, dup.amount_paise, "rc-cn-wrong"), net.S("Meena").id).catch(() => undefined);
@@ -535,12 +535,12 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   await net.sync();
   // Kitchen audit while the internet is still cut: every KOT the counter holds is on the KDS of its station, each line once.
   {
-    const kots = list(a07)("kot") as Array<{ id: string; station_code: string }>;
-    const kotLines = (d: Dev) => list(d)("kot_line") as Array<{ id: string; kot_id: string; order_line_id: string }>;
+    const kots = list(a07)("kot") as unknown as Array<{ id: string; station_code: string }>;
+    const kotLines = (d: Dev) => list(d)("kot_line") as unknown as Array<{ id: string; kot_id: string; order_line_id: string }>;
     const audit: Record<string, { missing: string[]; duplicateLines: number }> = {};
     for (const [k, code] of [[kitchen, "KITCHEN"], [bar, "BAR"]] as const) {
       const mine = kots.filter((x) => x.station_code === code);
-      const have = new Set((list(k)("kot") as Array<{ id: string }>).map((x) => x.id));
+      const have = new Set((list(k)("kot") as unknown as Array<{ id: string }>).map((x) => x.id));
       const lines = kotLines(k).filter((l) => mine.some((m) => m.id === l.kot_id));
       const seen = new Map<string, number>();
       for (const l of lines) seen.set(`${l.kot_id}|${l.order_line_id}`, (seen.get(`${l.kot_id}|${l.order_line_id}`) ?? 0) + 1);
@@ -589,7 +589,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
       st.transact = origTx as never;
     }
     const code = a09.fx.series.find((s) => s.doc_type === "tax_invoice")!.code;
-    const mine = ((await a09.rt.engine.rows("bill")) as Array<{ id: string; number: string }>).filter((b) => b.number.startsWith(`${code}/`)).sort((a, b) => (a.number < b.number ? -1 : 1));
+    const mine = ((await a09.rt.engine.rows("bill")) as unknown as Array<{ id: string; number: string }>).filter((b) => b.number.startsWith(`${code}/`)).sort((a, b) => (a.number < b.number ? -1 : 1));
     const last = mine[mine.length - 1];
     if (!last) throw new Error(`the wrong-tax bill was not recorded (${printError})`);
     f.wrongTax = { billId: last.id, number: last.number };
