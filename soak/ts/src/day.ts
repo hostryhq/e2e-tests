@@ -6,6 +6,8 @@ import type { BillRow } from "@hostry/client-core";
 import { publishConfig, type ConfigReport } from "./config";
 import { Clock, SoakNet, type Dev } from "./net";
 import { rng } from "./rng";
+import { duplicateNumber, fastClockBill, midDayScenarios, recordLateOps, totalProbe, type StepEnv } from "./scenario-steps";
+import { emptyScenarioFacts, type ScenarioFacts } from "./scenarios";
 
 /** What the script did and what it deliberately seeded: the claims check the converged state against these. */
 export type Facts = {
@@ -35,6 +37,8 @@ export type Facts = {
   billsMadeBy: Record<string, number>;
   restoreEpoch: boolean;
   erasure: { checkId: string; billId: string; number: string; name: string; gstin: string; refs: Array<{ intent: string; origin: string; stream: string; seq: number }> } | undefined;
+  /** The review scenarios (S1 to S7) and the print-mode evidence (M5): see scenarios.ts. */
+  scn: ScenarioFacts;
   kitchenPre: { kots: number; kotLines: number; byStation: Record<string, { missing: string[]; duplicateLines: number }> } | undefined;
 };
 
@@ -51,7 +55,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   const f: Facts = {
     seed: o.seed, mode: o.mode, config: undefined, steps: [], events: [], z: undefined, z2: undefined, blockedCloseCode: undefined,
     blackout: { bookEntriesMade: 0 }, doublePay: undefined, race: undefined, wrongTax: undefined, lateBill: undefined, hubKills: 0, hubWipes: 0,
-    restarts: [], lostAcks: 0, kotLatencyMs: [], kotsSentWhileCut: [], creditNotes: [], rebills: [], approvals: 0, billsMadeBy: {}, restoreEpoch: o.restoreEpoch, erasure: undefined, kitchenPre: undefined,
+    restarts: [], lostAcks: 0, kotLatencyMs: [], kotsSentWhileCut: [], creditNotes: [], rebills: [], approvals: 0, billsMadeBy: {}, restoreEpoch: o.restoreEpoch, erasure: undefined, kitchenPre: undefined, scn: emptyScenarioFacts(),
   };
   const log = (m: string): void => void f.events.push(`${new Date(clock.ms).toISOString().slice(11, 19)}Z ${m}`);
   const step = async <V>(name: string, fn: () => Promise<V>): Promise<V | undefined> => {
@@ -68,16 +72,21 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   };
   const list = (d: Dev) => (e: string) => d.rt.data.snapshot().list(e);
   const dueOf = (d: Dev, checkId: string): number => T.previewCheck(list(d), net.fx.outlet_id, checkId, clock.now())!.c.result.total_paise;
+  // The amount due is a total on a staff screen: the probe records that taking it wrote no op and no bill (M5, A1.5 item 4).
+  const dueProbed = (d: Dev, checkId: string): number => totalProbe(env, d, () => dueOf(d, checkId));
   const pay = async (d: Dev, checkId: string): Promise<{ billId: string; number: string } | undefined> => {
-    const due = dueOf(d, checkId);
+    const due = dueProbed(d, checkId);
+    f.scn.payCalls++;
     const r = R.next();
     const payments =
       r < 0.5 ? [{ tender: "cash" as const, amount_paise: due }] : r < 0.75 ? [{ tender: "upi" as const, amount_paise: due }] : (() => { const h = Math.floor(due / 2); return [{ tender: "cash" as const, amount_paise: h }, { tender: "card" as const, amount_paise: due - h }]; })();
     f.billsMadeBy[d.fx.name] = (f.billsMadeBy[d.fx.name] ?? 0) + 1;
     if (o.mode === "print") {
       // number_at=print: Present finalises the invoice; the payment is recorded against it afterwards.
+      const ops0 = d.opLog.length;
       const p = await T.present(d.rt.ctx, checkId);
       if (p.kind !== "invoice") throw new Error("print mode: Present did not finalise the invoice");
+      f.scn.presents.push({ checkId, billId: p.billId, number: p.number, opIntents: d.opLog.slice(ops0).map((o) => o.intent), paymentsAtPresent: list(d)("payment").filter((x) => (x as unknown as { bill_id: string }).bill_id === p.billId).length });
       await T.recordPayment(d.rt.ctx, p.billId, payments);
       return { billId: p.billId, number: p.number };
     }
@@ -91,6 +100,11 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     if (!ap.ok) throw new Error(`approval ${b.permission}: ${ap.reason}`);
     f.approvals++;
     return ap.approvalId;
+  };
+
+  const R2 = rng((o.seed ^ 0x5c3a) >>> 0); // the review scenarios draw from their own stream: the day's choices do not move
+  const env: StepEnv = {
+    net, scn: f.scn, mode: o.mode, log, step, list: (d) => list(d) as never, pay, bump: (d) => void (f.billsMadeBy[d.fx.name] = (f.billsMadeBy[d.fx.name] ?? 0) + 1), pick: (xs) => R2.pick(xs),
   };
 
   // --- Cast. The first device holds nothing: configuration is published through the legal routes below. ---
@@ -389,6 +403,9 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     await net.sync();
   });
 
+  // Review scenarios that need the internet cut and the day still open: S1 (payment on another till), S2 (two tills credit one bill), S6 (cited approval nobody granted), S7 (re-bill of a paid bill).
+  await midDayScenarios(env);
+
   // --- Evening: blackout. Hub, router and the counter's mains power are off; captains work alone on battery. ---
   clock.minutes(60);
   await net.sync();
@@ -581,6 +598,8 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
       await T.printBill(a09.rt.ctx, last.id);
     }
   });
+  // S4: the fast-clock device bills and the closing counter holds it before it closes (no virtual time passes until the close).
+  await fastClockBill(env);
   await a07.signIn("Meena");
   await step("close shift (blind count)", async () => {
     const shift = a07.rt.data.snapshot().get("shift", shiftId) as never;
@@ -601,6 +620,8 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     const b = await pay(a09, t);
     if (b) f.lateBill = { billId: b.billId, number: b.number };
   });
+  recordLateOps(env, [f.wrongTax, f.lateBill]);
+  await duplicateNumber(env, f.lateBill); // S5, after the late bill so that bill is the first holder of the number
   void bumpAll;
   return f;
 }

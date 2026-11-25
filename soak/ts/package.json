@@ -7,7 +7,9 @@
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
-    "soak": "vitest run"
+    "soak": "vitest run",
+    "selftest": "vitest run -c vitest.unit.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@hostry/client-core": "link:../../../client-core"

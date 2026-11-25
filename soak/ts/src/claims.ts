@@ -2,6 +2,7 @@ import { serviceToken } from "./config";
 import { detect, seriesGaps, type BillRow, type CreditNoteRow } from "@hostry/client-core";
 import { compareDigests, deviceDigest } from "./digest";
 import type { Facts } from "./day";
+import { printModeVerdict } from "./scenarios";
 import type { Dev, SoakNet } from "./net";
 import { psql, type Svc } from "./svc";
 import { FEATURE } from "../../../../app-restaurant/src/domain/entitlements";
@@ -29,7 +30,7 @@ export type Inputs = {
   t10?: import("./t10").T10State | undefined;
 };
 
-function mk(id: string, name: string): { c: Claim; ok(cond: boolean, pass: string, fail: string): void; note(s: string): void } {
+export function mk(id: string, name: string): { c: Claim; ok(cond: boolean, pass: string, fail: string): void; note(s: string): void } {
   const c: Claim = { id, name, status: "pass", evidence: [], failures: [] };
   return {
     c,
@@ -56,9 +57,12 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
   const a07 = by("A07");
   const extra: R = {};
 
-  const bills = (await rowsOf(a07, "bill")) as unknown as BillRow[];
+  // The seeded duplicate (S5) is a second bill under an existing number: it stays out of the generic totals, numbers and prints below and is judged by S5.
+  const dupSecond = f.scn.dupNumber?.secondBillId;
+  const dupNumber = f.scn.dupNumber?.number;
+  const bills = ((await rowsOf(a07, "bill")) as unknown as BillRow[]).filter((b) => b.id !== dupSecond);
   const notes = (await rowsOf(a07, "credit_note")) as unknown as CreditNoteRow[];
-  const pays = await rowsOf(a07, "payment");
+  const pays = (await rowsOf(a07, "payment")).filter((p) => p.bill_id !== dupSecond);
   const refunds = await rowsOf(a07, "refund");
 
   // ---- services ----
@@ -222,7 +226,7 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
   {
     const t = mk("T3", "Numbers");
     for (const d of devs) {
-      const g = await seriesGaps(d.rt.store);
+      const g = (await seriesGaps(d.rt.store)).filter((x) => !dupNumber || !JSON.stringify(x).includes(dupNumber)); // the seeded duplicate is S5's
       t.ok(g.length === 0, `${d.fx.name}: no gap or duplicate in its series register`, `${d.fx.name}: ${JSON.stringify(g)}`);
     }
     const all = [...bills.map((b) => `bill:${b.number}`), ...notes.map((n) => `cn:${n.number}`)];
@@ -317,9 +321,9 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
       // an original is a TAX INVOICE print of this number; credit notes and re-bills quote the number too
       const orig = billPrints.filter((s) => s.includes(b.number) && /TAX INVOICE/.test(s) && !/CREDIT NOTE|PRE-BILL/.test(s) && !dup(s)).length;
       per[b.number] = orig;
-      if (orig !== 1) wrong++;
+      if (orig !== (b.number === dupNumber ? 2 : 1)) wrong++; // the seeded duplicate number has two originals: two bills were printed under it
     }
-    t.ok(wrong === 0, `each of ${Object.keys(per).length} bills has exactly one original print job`, `${wrong} bill(s) without exactly one original print: ${JSON.stringify(Object.entries(per).filter(([, v]) => v !== 1).slice(0, 6))}`);
+    t.ok(wrong === 0, `each of ${Object.keys(per).length} bills has exactly one original print job`, `${wrong} bill(s) without exactly one original print: ${JSON.stringify(Object.entries(per).filter(([k, v]) => v !== (k === dupNumber ? 2 : 1)).slice(0, 6))}`);
     const reprintOk = billPrints.filter(dup).every((s) => /duplicate/i.test(s));
     t.ok(billPrints.some(dup) && reprintOk, `${billPrints.filter(dup).length} reprint(s) carry the duplicate banner`, "no marked reprint was found");
     const kotPrints: string[] = [];
@@ -532,6 +536,10 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
       t.ok(used === nums, `numbers consumed (${used}) equal documents that exist (${nums})`, `numbers consumed ${used} != documents ${nums}`);
       const openChecks = checks.filter((x) => x.status === "open" && !billedChecks.has(x.id) && !cancels.has(x.id));
       t.ok(openChecks.length === 0, "no check is left open without a bill or a cancellation", `${openChecks.length} open check(s) without a bill`);
+      // M5 (code review): the lines above also hold when the script never pressed Present. This is the evidence that can fail for the reason it names.
+      const pm = printModeVerdict(f.scn, own as unknown as Array<{ id: string; number: string; check_id?: string }>);
+      for (const p of pm.pass) t.ok(true, p, "");
+      for (const x of pm.fail) t.ok(false, "", x);
     }
     var t12 = t.c;
   }

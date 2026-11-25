@@ -5,6 +5,9 @@ import { cloudRestore } from "./restore";
 import { runDay } from "./day";
 import { Clock, SoakNet, loadFixture } from "./net";
 import { Svc, psql } from "./svc";
+import { scenarioClaims } from "./scenario-claims";
+import { arrivalIO } from "./scenario-steps";
+import { driveArrival } from "./scenarios";
 import { newT10, t10Mid, t10Morning, t10Reconnect } from "./t10";
 
 const seed = Number(process.env.SOAK_SEED ?? "1");
@@ -30,6 +33,11 @@ describe(`trading-day soak, seed ${seed}, number_at=${mode}`, () => {
     const st10 = newT10(onboard.subscription_overdue === true);
     const facts = await runDay(net, { t10: { morning: () => t10Morning(net, st10), mid: () => t10Mid(net, svc, st10, fx.tenant_id) }, seed, mode, tables: Number(process.env.SOAK_TABLES ?? "10"), counterSales: Number(process.env.SOAK_SALES ?? "20"), restoreEpoch: process.env.SOAK_EPOCH === "1", clock });
     const dayWall = Date.now() - t0;
+
+    // Arrival order (S1, S3): before the hub relays anything, three devices reach the cloud directly, one at a time, in the order the scenarios need:
+    // the isolated device (its late bills before any close), the till that recorded a payment (before the bill's issuer), then the closing counter.
+    await svc.login();
+    facts.scn.arrival = await driveArrival(arrivalIO(net, svc, fx.tenant_id), facts.scn, { late: { device: "A09", billIds: facts.scn.lateOps.map((o) => o.billId) }, payer: facts.scn.paymentFirst?.payer ?? "A08", closer: "A07" });
 
     // Reconnect: the internet returns and the isolated device and the partitioned counters rejoin.
     for (const d of net.devs.values()) d.lan.up = true;
@@ -67,17 +75,18 @@ describe(`trading-day soak, seed ${seed}, number_at=${mode}`, () => {
     claims.push(await duplicatesClaim(inputs));
     claims.push(await restoreClaim(inputs));
     claims.push(await erasureClaim(inputs));
+    claims.push(...(await scenarioClaims(inputs)));
     const gwOps = psql("sync", `select origin like 'cloud%', status, coalesce(reason,''), count(*) from ops where tenant_id='${fx.tenant_id}' group by 1,2,3 order by 1,2,3`);
     const parked = (db: string) => psql(db, "select count(*) from event_parked")[0]?.[0];
     const result = {
       seed, mode, date, tenant_id: fx.tenant_id, outlet_id: fx.outlet_id, wall_ms: Date.now() - t0, day_wall_ms: dayWall, reconnect_rounds: rounds, reconnect_wall_ms: convergedWallMs, post_revision_rounds: rounds2, revision_count_seen: revCount,
       claims, gateway_ops: gwOps.map(([c, s, r, n]) => ({ cloud_origin: c === "t", status: s, reason: r, n: Number(n) })), parked: { billing: parked("billing"), orders: parked("orders") },
-      facts: { steps_failed: facts.steps.filter((s) => !s.ok), steps_total: facts.steps.length, events: facts.events, z: facts.z, z2: facts.z2, hubKills: facts.hubKills, hubWipes: facts.hubWipes, restarts: facts.restarts, lostAcks: facts.lostAcks, bills_by_device: facts.billsMadeBy, approvals: facts.approvals, config: facts.config, kot_latency_ms: facts.kotLatencyMs, blackout: facts.blackout, late_bill: facts.lateBill, wrong_tax: facts.wrongTax },
+      facts: { steps_failed: facts.steps.filter((s) => !s.ok), steps_total: facts.steps.length, events: facts.events, z: facts.z, z2: facts.z2, hubKills: facts.hubKills, hubWipes: facts.hubWipes, restarts: facts.restarts, lostAcks: facts.lostAcks, bills_by_device: facts.billsMadeBy, approvals: facts.approvals, config: facts.config, kot_latency_ms: facts.kotLatencyMs, blackout: facts.blackout, late_bill: facts.lateBill, scenarios: facts.scn, wrong_tax: facts.wrongTax },
       extra: { ...extra, restore, digest_pre_restore: digestPre },
     };
     writeFileSync(`${out}.result.json`, JSON.stringify(result, null, 1));
     const line = (c: Claim) => `${c.id} ${c.name}: ${c.status.toUpperCase()}${c.failures.length ? ` (${c.failures.length} failing: ${c.failures[0]!.slice(0, 160)})` : ""}`;
     console.log("CLAIMS\n" + claims.map(line).join("\n"));
-    expect(claims.length).toBeGreaterThan(10); // the run produced a verdict; pass or fail is in the claims, never hidden in the runner
+    expect(claims.length).toBeGreaterThan(17); // the run produced a verdict; pass or fail is in the claims, never hidden in the runner
   });
 });
