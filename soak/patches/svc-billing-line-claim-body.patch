@@ -1,0 +1,11 @@
+--- a/service/bills.go	2026-11-25 04:32:36.761387691 +0000
++++ b/service/bills.go	2026-11-25 04:32:36.766137509 +0000
+@@ -204,7 +204,7 @@
+ 		if l.OrderLineId == nil {
+ 			continue
+ 		}
+-		created, err := ac.tx.PutDoc(ctx, repository.Doc{Kind: "line_claim", ID: *l.OrderLineId, Outlet: ac.outlet, K1: d.Id})
++		created, err := ac.tx.PutDoc(ctx, repository.Doc{Kind: "line_claim", ID: *l.OrderLineId, Outlet: ac.outlet, K1: d.Id, Body: marshalDoc(struct{}{})})
+ 		if err != nil {
+ 			return err
+ 		}
