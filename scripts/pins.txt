@@ -1,0 +1,7 @@
+go-common 95088b5
+go-auth b19b540
+api-specs c92ca77
+svc-identity 7ae4f6b
+svc-tenancy 0084d7f
+svc-admin 67a42d3
+svc-sync 762b939
