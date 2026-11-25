@@ -63,3 +63,26 @@ Virtual time ahead of the gateway is accepted by the gateway except for last-wri
 
 Identity caps OTP sends per client address at 40 a day (a run signs in five times), and a poison event on the bus (finding F14) would block the
 next run's consumers.
+
+## Review scenarios S1 to S7 and the self-test (after the Phase 2 reviews)
+
+The first four runs never created these orderings and faults (code review H1 to H5, M5, M7; security review P2-H1, P2-H2). Seeded per run from its own
+random stream (`seed ^ 0x5c3a`), recorded in `facts.scn`, judged by `ts/src/scenario-claims.ts` with the pure verdicts of `ts/src/scenarios.ts`:
+
+| Claim | Scenario | Passes only when |
+|---|---|---|
+| S1 (H1) | a payment recorded on A08 for A07's bill reaches billing first (scripted direct pushes, `driveArrival`) | the order was observed and billing's tender summary equals the devices' per tender |
+| S2 (H2) | A07 and A08, partitioned, each credit one bill in full | an open over-credit exception exists and the tax summary reduces output tax once |
+| S3 (H3) | A09's late bills reach billing before any day close | each lies in exactly one revision of its origin |
+| S4 (H4) | B5K (clock 7 min fast) bills, A07 holds it, then closes | no revision covers it, Z plus revisions equals all bills |
+| S5 (H5) | A09's counter goes back one and it bills again: one number, two bill ids | the gateway refuses `duplicate_document`, the first bill keeps the number in billing |
+| S6 (P2-H1) | a cashier comps citing an approval nobody granted | after the window the op is `flagged`, `approval_flag`, reason `missing` |
+| S7 (P2-H2) | a paid bill is re-billed without approval | refused on the device (`refused`/`approval_needed`) or flagged by a re-bill exception in billing |
+
+A precondition that was not reached (order, skew, partition) fails the claim as "not evidenced"; a scenario that was not seeded never passes.
+The seeded duplicate (S5) is left out of the generic totals, number and print checks (T2, T3, T6, T11), which expect it to be refused or flagged.
+The exception kind names `credit_exceeds_bill`, `rebill*` and `duplicate*` are the reviews' proposals, matched by pattern (`OVER_CREDIT`, `REBILL_DETECTOR`): adjust them when the services settle on names.
+T12 in print mode (M5) now also needs `printModeVerdict`: Present pressed for every payment flow, exactly one `bill.finalize` and no payment per Present, and a total on a staff screen that wrote no op or bill.
+
+Self-test, no stack and no fixture: `cd ts && npm run selftest` (synthetic data; every verdict has a passing case and the failing cases of the reviews, including a Present that was never pressed).
+`npm run typecheck` reports only errors that predate these files (day.ts casts, net.ts `OUTLET_STREAM`).
