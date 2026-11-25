@@ -10,6 +10,8 @@ export type Claim = { id: string; name: string; status: "pass" | "fail" | "not_r
 type R = Record<string, any>;
 const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
 const eq = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+/** Version vectors are maps: equal when every origin has the same seq, whatever the key insertion order (run 2 compared the JSON text, which orders keys by arrival). */
+const vEq = (a: unknown, b: unknown): boolean => eq(Object.entries(a as Record<string, number>).sort(), Object.entries(b as Record<string, number>).sort());
 
 export type Inputs = {
   net: SoakNet;
@@ -41,6 +43,8 @@ function mk(id: string, name: string): { c: Claim; ok(cond: boolean, pass: strin
 }
 
 const rowsOf = async (d: Dev, e: string): Promise<R[]> => (await d.rt.engine.rows(e)) as R[];
+/** The rows as the store holds them, with the `~c:<field>` commitment members the projection digest covers (engine.rows hides them); tombstoned rows left out. */
+const digestRowsOf = async (d: Dev, e: string): Promise<R[]> => ((await d.rt.store.list(e)) as R[]).filter((r) => r.deleted !== true);
 const text = (p: unknown): string => Buffer.from(p as Uint8Array).toString("latin1");
 
 export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }> {
@@ -150,7 +154,8 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
       }
       if (differing.length) t.note(`version-vector keys that differ (origin: per device): ${differing.join(" | ")}`);
     }
-    t.ok(vecs.every((v) => eq(v, vecs[0])), "every device holds the same outlet-stream version vector", "version vectors differ between devices");
+    t.note(`vector key order differs between devices (JSON text): ${!vecs.every((v) => eq(v, vecs[0]))}`);
+    t.ok(vecs.every((v) => vEq(v, vecs[0])), "every device holds the same version vector (origin to seq, order-independent)", "version vectors differ between devices");
     {
       // PII placement (ADR-0014 A3.1): the customer's details of the script's sale are held by pos, waiter and the hub, never by a kds.
       const e = f.erasure;
@@ -251,8 +256,12 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     const nc = cnt(sNotes);
     extra.verification = { bills: bc, credit_notes: nc };
     const wrong = f.wrongTax ? sBills.find((b: R) => b.id === f.wrongTax!.billId) : undefined;
-    const others = sBills.filter((b: R) => b.id !== f.wrongTax?.billId);
-    t.ok(others.every((b: R) => st(b) === "verified"), `${others.length} bills verified by billing (all but the seeded one)`, `bills not verified: ${JSON.stringify(cnt(others))}`);
+    // A typed paper-book entry (bill.manual_entry, `book_total_paise` set) is recorded `manual_entry` by design (api-specs billing: "verified, mismatch,
+    // stale_rules, profile_mismatch or manual_entry"; svc-billing lists it as a warning, within round-off): it is not recomputed, so it is not "verified".
+    const typed = new Set((bills as unknown as R[]).filter((b) => b.book_total_paise !== undefined && b.book_total_paise !== null).map((b) => b.id));
+    const others = sBills.filter((b: R) => b.id !== f.wrongTax?.billId && !typed.has(b.id));
+    t.ok(others.every((b: R) => st(b) === "verified"), `${others.length} bills verified by billing (all but the seeded one and ${typed.size} typed paper-book entr${typed.size === 1 ? "y" : "ies"})`, `bills not verified: ${JSON.stringify(cnt(others))}`);
+    t.ok(sBills.filter((b: R) => typed.has(b.id)).every((b: R) => st(b) === "manual_entry"), `the ${typed.size} typed paper-book entr${typed.size === 1 ? "y is" : "ies are"} recorded manual_entry`, `typed entries not recorded manual_entry: ${JSON.stringify(cnt(sBills.filter((b: R) => typed.has(b.id))))}`);
     t.ok(sNotes.every((n: R) => st(n) === "verified"), `${sNotes.length} credit notes verified`, `credit notes: ${JSON.stringify(nc)}`);
     if (!f.wrongTax) t.ok(false, "", "the seeded wrong-tax bill was not made (script step failed)");
     else if (!wrong) t.ok(false, "", "the seeded wrong-tax bill is missing from billing: it was rejected");
@@ -375,7 +384,7 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     const t = mk("T9", "Projections");
     const entitiesOf = async (): Promise<Record<string, R[]>> => {
       const m: Record<string, R[]> = {};
-      for (const e of Object.keys((await import("./entities.generated.json")).default as R)) m[e] = await rowsOf(a07, e);
+      for (const e of Object.keys((await import("./entities.generated.json")).default as R)) m[e] = await digestRowsOf(a07, e);
       return m;
     };
     const rows = await entitiesOf();
@@ -384,8 +393,23 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
         t.ok(false, "", `${owner} returned no digest: ${JSON.stringify(svcDigest).slice(0, 160)}`);
         continue;
       }
-      const dev = deviceDigest(owner, date, rows);
+      const texts = new Map<string, string>();
+      const dev = deviceDigest(owner, date, rows, texts);
       const diff = compareDigests(dev, svcDigest);
+      if (owner === "billing" && dev.state_hash !== svcDigest.state_hash) {
+        // Which rows differ, and how: the service's stored row texts against the device's (diagnostic only).
+        const svcTexts = new Map(psql("billing", "select body#>>'{}' from docs where kind='digest_row'").map((r) => [r[0]!, true] as const));
+        const only = [...texts.entries()].filter(([k, v]) => k.startsWith("bill|") && !svcTexts.has(v));
+        for (const [k, v] of only.slice(0, 4)) {
+          const id = k.split("|")[1]!;
+          const sv = [...svcTexts.keys()].find((x) => x.includes(`"id":"${id}"`));
+          const dj = JSON.parse(v) as R;
+          const sj = sv ? (JSON.parse(sv) as R) : {};
+          const keys = [...new Set([...Object.keys(dj), ...Object.keys(sj)])].filter((x) => JSON.stringify(dj[x]) !== JSON.stringify(sj[x]));
+          t.note(`billing row ${k} differs in: ${keys.map((x) => `${x} device=${JSON.stringify(dj[x])} service=${JSON.stringify(sj[x])}`).join("; ")}`);
+        }
+        t.note(`${only.length} device bill row text(s) have no equal row text in billing`);
+      }
       t.ok(dev.state_hash === svcDigest.state_hash, `${owner}: service state_hash equals the device's (${dev.state_hash.slice(0, 16)}…)`, `${owner}: state_hash differs; ${diff.length} entit${diff.length === 1 ? "y" : "ies"} differ: ${diff.join(" | ")}`);
       // Every other device computes the same digest (the per-service hash is a property of the converged state).
     }
@@ -418,7 +442,7 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     t.ok(revisions.length >= 1 && (revs[0]?.length ?? 0) === revisions.length, `billing holds ${revisions.length} Z revision(s), equal to the devices'`, `billing revisions ${revisions.length} vs device ${revs[0]?.length ?? 0}: the late bill after close (${f.lateBill?.number}) produced no Z revision at billing within the wait`);
     const late = bills.filter((b) => [f.lateBill?.number, f.wrongTax?.number].includes(b.number));
     const lateTotal = sum(late.map((b) => b.total_paise));
-    const revTotal = sum(revisions.map((r: R) => r.totals?.total?.amount_paise ?? r.delta?.total?.amount_paise ?? 0));
+    const revTotal = sum(revisions.map((r: R) => r.added_totals?.total?.amount_paise ?? r.totals?.total?.amount_paise ?? r.delta?.total?.amount_paise ?? 0));
     t.ok(!!f.z && f.z.totalPaise + revTotal === sum(bills.map((b) => b.total_paise)), `original Z plus revisions equals all bills (${sum(bills.map((b) => b.total_paise))})`, `original Z ${f.z?.totalPaise} + revisions ${revTotal} != all bills ${sum(bills.map((b) => b.total_paise))} (late bills on A09 total ${lateTotal})`);
     t.note(`A08 closed the same date while partitioned from A07: Z numbers ${f.z?.zNumber} and ${f.z2?.zNumber}; billing day status ${day?.status}, late_document_count ${day?.late_document_count}, revision_count ${day?.revision_count}`);
     var t11 = t.c;
@@ -575,7 +599,7 @@ export async function erasureClaim(i: Inputs): Promise<Claim> {
 export async function digestDiffs(net: SoakNet, svc: Svc, date: string): Promise<{ orders: string[]; billing: string[] }> {
   const a07 = net.dev("A07");
   const rows: Record<string, R[]> = {};
-  for (const e of Object.keys((await import("./entities.generated.json")).default as R)) rows[e] = await rowsOf(a07, e);
+  for (const e of Object.keys((await import("./entities.generated.json")).default as R)) rows[e] = await digestRowsOf(a07, e);
   const out = { orders: [] as string[], billing: [] as string[] };
   for (const owner of ["orders", "billing"] as const) {
     const sd = (await svc.get(owner, `/v1/projection-digests?business_date=${date}`)).json;

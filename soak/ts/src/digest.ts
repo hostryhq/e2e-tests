@@ -17,7 +17,7 @@ const sha = (s: string): string => createHash("sha256").update(s, "utf8").digest
  * business_date, or the business_date reached by following day_parent), JCS of id plus every set non-pii schema field,
  * SHA-256 over the row texts in id order, then the state hash over `<entity>\n<count>\n<hash>\n`.
  */
-export function deviceDigest(owner: "orders" | "billing", date: string, rows: Record<string, Row[]>): Digest {
+export function deviceDigest(owner: "orders" | "billing", date: string, rows: Record<string, Row[]>, texts_out?: Map<string, string>): Digest {
   const byId = new Map<string, Row>();
   for (const [e, list] of Object.entries(rows)) for (const r of list) byId.set(`${e}|${r.id}`, r);
   const dayOf = (entity: string, r: Row, depth = 0): string | undefined => {
@@ -47,7 +47,9 @@ export function deviceDigest(owner: "orders" | "billing", date: string, rows: Re
         }
         // ADR-0014 A3.2: a pii field's COMMITMENT (member `~c:<field>`, the winner's, from body.pii_c) is part of the text; never its value.
         for (const [k, v] of Object.entries(r)) if (k.startsWith("~c:") && v !== undefined && v !== null) o[k] = v;
-        return { id: r.id, text: canonicalize(o) };
+        const text = canonicalize(o);
+        texts_out?.set(`${entity}|${r.id}`, text);
+        return { id: r.id, text };
       })
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     entities.push({ entity, row_count: texts.length, hash: sha(texts.map((t) => t.text + "\n").join("")) });

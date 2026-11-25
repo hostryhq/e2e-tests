@@ -386,14 +386,7 @@ var rolePerms = map[string][]string{}
 func init() {
 	waiter := []string{"order.create", "order.edit", "bill.request", "bill.present", "bill.new", "bill.split", "order.items.move", "order.table.move", "kot.handover", "menu.availability.set"}
 	cashier := append(append([]string{}, waiter...), "bill.finalize", "payment.record", "bill.discount.apply", "bill.service_charge.remove", "bill.customer_details.edit",
-		"order.table.merge", "bill.merge", "shift.open", "shift.close", "drawer.cash_move", "drawer.open_no_sale", "kot.reprint", "kds.bump", "bill.reprint",
-		// HARNESS CHOICE: the cashier also holds the two permissions an approval stands in for (bill.discount.over_limit, bill.line.comp): the gateway does not
-		// look at the approval of an override intent and flags the op permission_flag, and every sync.op.flagged event blocks the orders and billing consumers
-		// (findings F17, F14). The approval flow itself (proof, record) still runs.
-		"bill.discount.over_limit", "bill.line.comp")
-	if os.Getenv("SOAK_CASHIER_STRICT") == "1" { // the role as the app's templates have it: only managers hold the two override permissions
-		cashier = cashier[:len(cashier)-2]
-	}
+		"order.table.merge", "bill.merge", "shift.open", "shift.close", "drawer.cash_move", "drawer.open_no_sale", "kot.reprint", "kds.bump", "bill.reprint")
 	manager := append(append([]string{}, cashier...), "order.line.cancel", "bill.credit_note.create", "bill.rebill", "bill.cancel",
 		"payment.refund", "day.close", "shift.close.any", "bill.manual_entry", "report.view.day", "report.view.outlet", "floor.manage", "menu.manage", "menu.price.edit", "settings.outlet.edit")
 	have := map[string]bool{}

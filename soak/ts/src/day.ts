@@ -84,9 +84,11 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     const b = await T.settle(d.rt.ctx, checkId, { payments });
     return { billId: b.billId, number: b.number };
   };
-  const approve = async (d: Dev, perm: string, requester: string): Promise<string> => {
-    const ap = await d.rt.identity.approve(net.S("Meena").id, net.S("Meena").pin, perm, requester);
-    if (!ap.ok) throw new Error(`approval ${perm}: ${ap.reason}`);
+  // The approval is made with the binding the app's own builder (T.discountBinding, T.compBinding, ...) gives: intent, target, reason and the values the
+  // citing op records, which the app hashes (client-core approvalActionHash) and the gateway recomputes from the citing op.
+  const approve = async (d: Dev, b: T.ApprovalBinding, requester: string): Promise<string> => {
+    const ap = await d.rt.identity.approve(net.S("Meena").id, net.S("Meena").pin, b.permission, requester, b);
+    if (!ap.ok) throw new Error(`approval ${b.permission}: ${ap.reason}`);
     f.approvals++;
     return ap.approvalId;
   };
@@ -244,13 +246,13 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
           await T.present(d.rt.ctx, t.checkId);
         }
         if (i === 1) {
-          const ap = await approve(d, "bill.discount.over_limit", net.S("Asha").id);
+          const ap = await approve(d, T.discountBinding(t.checkId, "percent", 1500, "rc-disc-complaint"), net.S("Asha").id);
           await T.applyDiscount(d.rt.ctx, { checkId: t.checkId, kind: "percent", value: 1500, reasonCodeId: "rc-disc-complaint", approvalId: ap });
         }
         if (i === 2) {
           const lines = list(d)("order_line").filter((l) => (l as { check_id: string; status?: string }).check_id === t.checkId) as Array<{ id: string }>;
           if (lines[0]) {
-            const ap = await approve(d, "bill.line.comp", net.S("Asha").id);
+            const ap = await approve(d, T.compBinding(lines[0].id, "rc-comp-owner"), net.S("Asha").id);
             await T.compLine(d.rt.ctx, { lineId: lines[0].id, reasonCodeId: "rc-comp-owner", approvalId: ap });
           }
         }
@@ -370,10 +372,11 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   // Closing the conflicts with compensating ops: refund the duplicate payment, credit the second bill.
   await step("close conflicts by refund and credit note", async () => {
     if (f.doublePay) {
-      const pays = list(a07)("payment").filter((p) => (p as { bill_id: string }).bill_id === f.doublePay!.billId) as Array<{ id: string; amount_paise: number }>;
+      const pays = list(a07)("payment").filter((p) => (p as { bill_id: string }).bill_id === f.doublePay!.billId) as Array<{ id: string; bill_id: string; amount_paise: number }>;
       const dup = pays[pays.length - 1]!;
-      const ap = await approve(a07, "payment.refund", net.S("Meena").id).catch(() => undefined);
-      const r = await T.refundPayment(a07.rt.ctx, { paymentId: dup.id, amountPaise: dup.amount_paise, reasonCodeId: "rc-cn-wrong", ...(ap ? { approvalId: ap } : {}) });
+      const refundId = a07.rt.ctx.newId();
+      const ap = await approve(a07, T.refundBinding(refundId, dup.bill_id, dup.id, dup.amount_paise, "rc-cn-wrong"), net.S("Meena").id).catch(() => undefined);
+      const r = await T.refundPayment(a07.rt.ctx, { paymentId: dup.id, amountPaise: dup.amount_paise, reasonCodeId: "rc-cn-wrong", refundId, ...(ap ? { approvalId: ap } : {}) });
       void r;
     }
     if (f.race) {
@@ -499,9 +502,9 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   // Remaining unresolved checks (drafts without a bill) are cancelled with approval.
   await step("cancel remaining checks", async () => {
     for (const u of T.unresolvedChecks(list(a07))) {
-      const ap = await approve(a07, "bill.cancel", net.S("Meena").id).catch(() => undefined);
-      void ap;
-      await T.cancelCheck(a07.rt.ctx, u.checkId, "rc-cancel-mind").catch(() => undefined);
+      const cancelId = a07.rt.ctx.newId();
+      const ap = await approve(a07, T.billCancelBinding(cancelId, u.checkId, "rc-cancel-mind"), net.S("Meena").id).catch(() => undefined);
+      await T.cancelCheck(a07.rt.ctx, u.checkId, "rc-cancel-mind", ap, cancelId).catch(() => undefined);
     }
   });
   await net.sync();
