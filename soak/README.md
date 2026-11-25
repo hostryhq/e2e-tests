@@ -21,7 +21,7 @@ admin), `gw/` (soakgw: the LAN hub, device tokens, clock and internet switch), `
 Real: identity, tenancy, admin, catalog, orders, billing, NATS and Postgres processes; **svc-sync's own `cmd/gateway`** with
 `SYNC_DIRECTORY=identity` (real identity and tenancy directory, op-signing key, outbox relay to NATS, erasure route); real
 device tokens (identity `createDeviceToken`), real PIN proofs verified by identity; the hub (`hub.New`) of svc-sync; client-core
-sync engine; app-restaurant e7cc713 domain code and runtime, built from the device's offline pack.
+sync engine; app-restaurant e2ed513 domain code and runtime, built from the device's offline pack.
 
 Harness additions, each reported in the run reports (the list is also the findings that block a harness-free run):
 
@@ -34,12 +34,18 @@ Harness additions, each reported in the run reports (the list is also the findin
    action hash, target and reason itself). The app's own prover is a fixture.
 3. **Pack from identity's claims.** `net.ts` `packOf` maps the signed offline pack claims plus tenancy's series ids to the app's `DevicePack`
    (no adapter exists yet).
-4. One build-time rewrite remains in `ts/vitest.config.ts`: the app opens the engine on the outlet and brand streams only; the tenant stream
-   (cloud-origin tax rule sets) is named from the onboarding.
+4. No build-time rewrite remains (run 4): the app opens the outlet, brand and tenant streams from the pack.
 5. Configuration is published through legal routes (device config intents on the counter; cloud intents emitted by billing with its own key).
 6. soakgw `GET /soak/hub/pii` reads the hub's `op_pii` table (read-only) so T1 can check that the hub holds the customer's values.
 7. After a cloud restore the engine re-offers its pii-bearing ops on every round for a day (svc-sync `ResendPII`), so `settle` stops counting hub pushes as
    progress once `net.piiResend` is set (vectors and pulls must still be quiet).
+
+T10 (run 4): `soak-onboard` creates two plans (`soak_full` with `restaurant.kds`, `soak_lite` without), puts the organisation on `soak_full`
+with a charge for a long-past period (overdue), and `-change-plan soak_lite -org <id>` changes the plan as the vendor does mid-day (`ts/src/t10.ts`).
+The packs carry identity's `entitlements` snapshot; at the reconnect each device refreshes its pack and the runtime's `adoptPack` takes the higher snapshot.
+Suspension and closure statuses are synthetic (the vendor suspension needs an approval and is refused while a day is open); the app's own
+`tradingStanding` decides against the devices' real day rows. The headless devices do not render the UI, so "kitchen mode unavailable" is the
+app's `featureOn(snapshot, restaurant.kds)` decision, not a screen.
 
 Removed in run 3 (the products now do it): the `SchemaRegistry` patch and `engine.record` wrapper for `session` and `approval` records, the invented
 approval hash, `SOAK_NO_SESSION_RECORD`, the brand overlay (`SOAK_SYNC_PATCH`), the cashier's override permissions (`SOAK_CASHIER_STRICT`), the
