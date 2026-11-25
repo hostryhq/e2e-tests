@@ -28,6 +28,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -41,6 +42,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -386,6 +388,42 @@ func main() {
 			return
 		}
 		w.WriteHeader(204)
+	})
+	// Where the hub holds personal values (ADR-0014 A3.1): rows of its op_pii table, and how many of them carry `needle` (a customer name of the script).
+	ctl.HandleFunc("GET /soak/hub/pii", func(w http.ResponseWriter, r *http.Request) {
+		db, err := sql.Open("sqlite", "file:"+a.hubFile+"?mode=ro")
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		defer db.Close()
+		rows, err := db.QueryContext(ctx, `SELECT data FROM op_pii`)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		defer rows.Close()
+		needle := r.URL.Query().Get("needle")
+		n, with := 0, 0
+		for rows.Next() {
+			var d any
+			if err := rows.Scan(&d); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			n++
+			var s string
+			switch v := d.(type) {
+			case []byte:
+				s = string(v)
+			case string:
+				s = v
+			}
+			if needle != "" && strings.Contains(s, needle) {
+				with++
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]int{"rows": n, "with_needle": with})
 	})
 	ctl.HandleFunc("POST /soak/epoch", func(w http.ResponseWriter, r *http.Request) {
 		if err := devepoch.Stamp(ctx, *dsn, r.URL.Query().Get("id")); err != nil {

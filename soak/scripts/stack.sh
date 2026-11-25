@@ -12,16 +12,6 @@ export HOSTRY_PG_PORT=15432 HOSTRY_NATS_PORT=14222
 export HOSTRY_IDENTITY_PORT=28101 HOSTRY_TENANCY_PORT=28102 HOSTRY_ADMIN_PORT=28103 HOSTRY_SYNC_PORT=28104
 export HOSTRY_CATALOG_PORT=28105 HOSTRY_ORDERS_PORT=28106 HOSTRY_BILLING_PORT=28107
 export HOSTRY_SYNC_DIRECTORY=identity
-# SOAK_SYNC_PATCH=1: build svc-sync with soak/patches/svc-sync-credential-brand.patch applied through a go build overlay (the checkout is not
-# touched). Identity's credential has no brand_id, so the real directory refuses every brand-stream op (stream_outside_binding); see the report.
-if [ "${SOAK_SYNC_PATCH:-0}" = 1 ]; then
-  repos="$(cd "$here/../../.." && pwd)"
-  mkdir -p "$HOSTRY_LOCAL_DIR/overlay"
-  cp "$repos/svc-sync/realdir/realdir.go" "$HOSTRY_LOCAL_DIR/overlay/realdir.go"
-  (cd "$HOSTRY_LOCAL_DIR/overlay" && patch -s -p2 realdir.go <"$here/../patches/svc-sync-credential-brand.patch")
-  printf '{"Replace":{"%s":"%s"}}\n' "$repos/svc-sync/realdir/realdir.go" "$HOSTRY_LOCAL_DIR/overlay/realdir.go" >"$HOSTRY_LOCAL_DIR/overlay/overlay.json"
-  export GOFLAGS="-overlay=$HOSTRY_LOCAL_DIR/overlay/overlay.json"
-fi
 case "${1:-status}" in
   up)
     "$infra/dev/up-full.sh" up

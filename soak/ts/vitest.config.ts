@@ -19,10 +19,9 @@ const rewire = (): Plugin => ({
   transform(code, id) {
     const p = id.replace(/\\/g, "/");
     if (p.endsWith("/app-restaurant/src/runtime.ts")) {
-      const streams = JSON.stringify([`outlet:${fx.outlet_id}`, `brand:${fx.brand_id}`, `tenant:${fx.tenant_id}`]);
-      const a = code.replace("outletStream,\n    signer,", `outletStream,\n    streams: ${streams},\n    signer,`);
-      const b = a.replace("{ streams: { brand: outletStream, tenant: outletStream } }", `{ streams: { brand: ${JSON.stringify("brand:" + fx.brand_id)}, tenant: ${JSON.stringify("tenant:" + fx.tenant_id)} } }`);
-      if (a === code || b === a) throw new Error("soak-rewire: runtime.ts no longer has the single-stream wiring this rewrite expects; remove or update the rewrite");
+      const a = code.replace("streams: [outletStream, brandStream],", `streams: [outletStream, brandStream, ${JSON.stringify("tenant:" + fx.tenant_id)}],`);
+      const b = a.replace("{ streams: { brand: brandStream, tenant: outletStream } }", `{ streams: { brand: brandStream, tenant: ${JSON.stringify("tenant:" + fx.tenant_id)} } }`);
+      if (a === code || b === a) throw new Error("soak-rewire: runtime.ts no longer has the wiring this rewrite expects; remove or update the rewrite");
       return b;
     }
     return null;

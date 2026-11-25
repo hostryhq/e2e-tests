@@ -45,6 +45,8 @@ export function deviceDigest(owner: "orders" | "billing", date: string, rows: Re
           const v = r[f];
           if (v !== undefined && v !== null) o[f] = v;
         }
+        // ADR-0014 A3.2: a pii field's COMMITMENT (member `~c:<field>`, the winner's, from body.pii_c) is part of the text; never its value.
+        for (const [k, v] of Object.entries(r)) if (k.startsWith("~c:") && v !== undefined && v !== null) o[k] = v;
         return { id: r.id, text: canonicalize(o) };
       })
       .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));

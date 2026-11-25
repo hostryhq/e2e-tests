@@ -606,6 +606,12 @@
    "calc_v": {
     "pii": false
    },
+   "customer_gstin": {
+    "pii": true
+   },
+   "customer_name": {
+    "pii": true
+   },
    "financial_year": {
     "pii": false
    },

@@ -1,7 +1,6 @@
 import * as T from "../../../../app-restaurant/src/data/trading";
 import { KITCHEN_PRINTER } from "../../../../app-restaurant/src/data/trading/bill-printer";
 
-import { deviceSession } from "../../../../app-restaurant/src/runtime";
 import { ENTITIES, Snapshot } from "../../../../app-restaurant/src/data/app-data";
 import type { BillRow } from "@hostry/client-core";
 import { publishConfig, type ConfigReport } from "./config";
@@ -99,7 +98,6 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   const caps = [await net.add("B3K"), await net.add("B4K"), await net.add("B5K", { offsetMs: 7 * 60_000 })]; // B5K's clock runs seven minutes fast
   const kitchen = await net.add("K9K");
   const bar = await net.add("K8K");
-  for (const k of [kitchen, bar]) k.rt.setSession(deviceSession(k.rt));
   log("cast up: 3 counters, 3 captains, 2 KDS, one hub; morning: internet up for the configuration push");
   await net.setInternet(true);
   f.config = await publishConfig(net, a07, o.mode);

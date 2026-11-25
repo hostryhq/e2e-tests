@@ -83,9 +83,14 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     const heldTotal = heldN.reduce((n, h) => n + h[1], 0);
     const plain = await Promise.all(devs.map(async (d) => [d.fx.name, await d.rt.engine.stateHash()] as const));
     const accepted = await Promise.all(devs.map(async (d) => [d.fx.name, await d.rt.engine.acceptedStateHash()] as const));
-    const hashes = heldTotal > 0 ? accepted : plain;
+    // ADR-0014 A3 (client-core 1e26251): the state hash covers a commitment per personal field, never a value, so it is equal on every node
+    // whether or not it holds the values. Convergence is judged on the PLAIN hash of every non-kds device (with ops held, on the accepted hash).
+    const nonKds = new Set(devs.filter((d) => d.fx.kind !== "kds").map((d) => d.fx.name));
+    const hashes = (heldTotal > 0 ? accepted : plain).filter((h) => nonKds.has(h[0]));
     const uniq = new Set(hashes.map((h) => h[1]));
-    const which = heldTotal > 0 ? `acceptedStateHash (${heldTotal} ops held on ${heldN.filter((h) => h[1] > 0).map((h) => `${h[0]}:${h[1]}`).join(",")})` : "stateHash (no op held)";
+    const kdsEq = devs.filter((d) => d.fx.kind === "kds").map((d) => [d.fx.name, plain.find((p) => p[0] === d.fx.name)![1] === [...uniq][0]] as const);
+    t.note(`kds plain hash equals the others': ${JSON.stringify(kdsEq)} (informative: the commitment-only hash is meant to be equal on a kds too)`);
+    const which = heldTotal > 0 ? `acceptedStateHash (${heldTotal} ops held on ${heldN.filter((h) => h[1] > 0).map((h) => `${h[0]}:${h[1]}`).join(",")})` : "plain stateHash (no op held)";
     t.ok(uniq.size === 1, `${devs.length} devices hold one ${which} ${[...uniq][0]!.slice(0, 16)}…`, `${which} differ: ${JSON.stringify(hashes.map((h) => [h[0], h[1].slice(0, 8)]))}`);
     if (uniq.size > 1) {
       // Which entities differ between the odd device(s) and the majority: row ids and content, so the cause is in the report.
@@ -134,7 +139,33 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     }
     t.note(`plain stateHash groups: ${new Set(plain.map((h) => h[1])).size}; accepted groups: ${new Set(accepted.map((h) => h[1])).size}; held per device ${JSON.stringify(heldN)}`);
     const vecs = await Promise.all(devs.map((d) => d.rt.engine.vector()));
+    {
+      // The "version vectors differ" note of run 2, isolated: which origins differ, between which devices, by how many ops.
+      const names = devs.map((d) => d.fx.name);
+      const origins = new Set(vecs.flatMap((v) => Object.keys(v as R)));
+      const differing: string[] = [];
+      for (const o of [...origins].sort()) {
+        const per = vecs.map((v) => (v as R)[o] ?? 0);
+        if (new Set(per).size > 1) differing.push(`${o}: ${per.map((n, k) => `${names[k]}=${n}`).join(" ")}`);
+      }
+      if (differing.length) t.note(`version-vector keys that differ (origin: per device): ${differing.join(" | ")}`);
+    }
     t.ok(vecs.every((v) => eq(v, vecs[0])), "every device holds the same outlet-stream version vector", "version vectors differ between devices");
+    {
+      // PII placement (ADR-0014 A3.1): the customer's details of the script's sale are held by pos, waiter and the hub, never by a kds.
+      const e = f.erasure;
+      if (e) {
+        const holds = async (d: Dev): Promise<boolean> => {
+          const rs = [...(await rowsOf(d, "bill")), ...(await rowsOf(d, "check"))].filter((r) => r.customer_name === e.name || r.customer_gstin === e.gstin);
+          return rs.length > 0;
+        };
+        const placed = await Promise.all(devs.map(async (d) => [d.fx.name, d.fx.kind, await holds(d)] as const));
+        const bad = placed.filter((p) => (p[1] === "kds" ? p[2] : !p[2]));
+        t.ok(bad.length === 0, `pii placement: ${placed.map((p) => `${p[0]}(${p[1]})=${p[2] ? "values" : "none"}`).join(" ")}`, `pii placed wrongly: ${bad.map((p) => `${p[0]}(${p[1]}) ${p[2] ? "holds values" : "holds none"}`).join(", ")}`);
+        const hub = (await (await fetch(`${net.fx.ctl_url}/soak/hub/pii?needle=${encodeURIComponent(e.name)}`)).json()) as { rows: number; with_needle: number };
+        t.ok(hub.with_needle > 0, `the hub holds the customer's name (${hub.with_needle} of ${hub.rows} op_pii rows)`, `the hub holds no op_pii row with the customer's name (${hub.rows} rows)`);
+      }
+    }
     const cloud = await a07.cloudT.hello({ protocol: 1 }).catch((e) => ({ vector: {}, err: String(e) }));
     const cv: Record<string, number> = {};
     for (const [k, v] of Object.entries((cloud as R).vector ?? {})) if (k.endsWith(`/outlet:${i.outlet}`)) cv[k.split("/")[0]!] = v as number;

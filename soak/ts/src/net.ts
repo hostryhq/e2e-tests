@@ -1,22 +1,10 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { HttpTransport, KeyRing, SchemaRegistry, SoftwareSigner, TransportError, bearerAuth, lanAuth, type CredentialEnvelope, type SyncTransport, type SeriesGrant } from "@hostry/client-core";
-import { OUTLET_STREAM, createRuntime, type Runtime, type RuntimeOptions } from "../../../../app-restaurant/src/runtime";
+import { HttpTransport, KeyRing, SoftwareSigner, TransportError, bearerAuth, lanAuth, type CredentialEnvelope, type SyncTransport, type SeriesGrant } from "@hostry/client-core";
+import { OUTLET_STREAM, createRuntime, openDeviceSession, type Runtime, type RuntimeOptions } from "../../../../app-restaurant/src/runtime";
 import type { ApprovalProofInput, DevicePack, PinProver, SessionProofInput } from "../../../../app-restaurant/src/data/auth/pack";
 import { ensureDayOpen } from "../../../../app-restaurant/src/data/trading/orders";
-
-/**
- * HARNESS ADDITION (finding F15): client-core's restaurant registry has no `session` or `approval` entity, so `engine.record` refuses
- * the `session` record the gateway needs to type a session ("record: unknown entity session"). The two are registered here as append
- * entities (what api-specs records: [session] / [approval] says) for the soak's devices only.
- */
-if (!process.env.SOAK_NO_SESSION_RECORD) {
-  const orig = SchemaRegistry.prototype.get;
-  SchemaRegistry.prototype.get = function (this: SchemaRegistry, entity: string) {
-    return orig.call(this, entity) ?? (entity === "session" || entity === "approval" ? { name: entity, policy: "append" } : undefined);
-  };
-}
 
 export type FxSeries = { id: string; code: string; doc_type: string; status: string };
 export type FxDevice = { device_id: string; kind: "pos" | "waiter" | "kds"; name: string; kid: string; pub: string; pkcs8: string; cred: CredentialEnvelope; series: FxSeries[]; pack: Record<string, any> };
@@ -64,17 +52,14 @@ export class HarnessProver implements PinProver {
     const k = this.key(i.memberId, i.pin, i.pinV);
     return k ? hmacB64u(k, ["session", i.sid, i.deviceId, i.memberId, i.packV, i.pinV, canonTime(i.openedAt)].join("|")) : undefined;
   }
-  /** The approval records the prover made proofs for, by approval id: the record `approval.grant` must carry (see the wrapper in SoakNet.add). */
-  readonly records = new Map<string, { approver: string; permission: string; requester: string; action_hash: string; target: string; reason: string }>();
+  /**
+   * The app builds the approval record and its action hash (client-core approvalActionHash over intent, permission, requester, target,
+   * approval id, reason and values) and hands hash, target and reason to the prover; the message is identity's (ADR-0005 A3.1 item 2).
+   */
   async approvalProof(i: ApprovalProofInput): Promise<string | undefined> {
     const k = this.key(i.approverId, i.pin, i.pinV);
     if (!k) return undefined;
-    // identity binds the action hash, target and reason of the approval record into the proof (ADR-0005 A3.1) and the gateway reads them from
-    // an `approval` record on the op. The app has none of the three and records no `approval` record, so the harness defines the record:
-    // the action hash is the SHA-256 of "permission|requester|approval id" (the gateway never recomputes it), target and reason are empty.
-    const action_hash = createHash("sha256").update(`${i.permission}|${i.requesterId}|${i.approvalId}`).digest("hex");
-    this.records.set(i.approvalId, { approver: i.approverId, permission: i.permission, requester: i.requesterId, action_hash, target: "", reason: "" });
-    return hmacB64u(k, [["approval", action_hash, i.deviceId, i.approverId, i.packV, i.pinV].join("|"), i.approvalId, i.permission, quote(""), i.requesterId, canonTime(i.at), quote("")].join("|"));
+    return hmacB64u(k, [["approval", i.actionHash, i.deviceId, i.approverId, i.packV, i.pinV].join("|"), i.approvalId, i.permission, quote(i.target), i.requesterId, canonTime(i.at), quote(i.reason)].join("|"));
   }
 }
 
@@ -91,6 +76,7 @@ export function packOf(fx: Fixture, d: FxDevice): DevicePack {
     outletId: fx.outlet_id,
     deviceId: d.device_id,
     deviceKind: d.kind,
+    kid: d.kid,
     deviceCode: invoice?.code ?? d.name,
     packV: c.pack_v,
     expiresAt: c.offline_valid_until,
@@ -267,17 +253,8 @@ export class SoakNet {
     });
     const record = rt.engine.record.bind(rt.engine);
     const opLog: Dev["opLog"] = o.store ? (this.devs.get(name)?.opLog ?? []) : [];
-    rt.engine.record = (async (spec0: Parameters<typeof record>[0]) => {
-      // HARNESS ADDITION (finding): the gateway reads the type of a session from the `session` record of its `session.open`
-      // (api-specs sync/intents control.yaml: records [session]; svc-sync service/session.go openedSession); app-restaurant records
-      // `session.open` with no mutation, so every PIN session would be "of an unknown type" and every actor unverified. SOAK_NO_SESSION_RECORD=1
-      // runs the app as it is.
-      const spec =
-        spec0.intent === "session.open" && spec0.sid && !process.env.SOAK_NO_SESSION_RECORD && !spec0.actor?.startsWith("device:")
-          ? { ...spec0, build: () => [{ e: "session", id: spec0.sid as string, k: "insert" as const, f: { type: "pin" } }] }
-          : spec0.intent === "approval.grant" && spec0.approval && !process.env.SOAK_NO_SESSION_RECORD && prover.records.has(spec0.approval)
-            ? { ...spec0, build: () => [{ e: "approval", id: spec0.approval as string, k: "insert" as const, f: { ...prover.records.get(spec0.approval as string)! } }] }
-            : spec0;
+    // Observation only (the claims that name specific ops read opLog); the spec passes through unchanged.
+    rt.engine.record = (async (spec: Parameters<typeof record>[0]) => {
       const op = await record(spec);
       opLog.push({ intent: spec.intent, origin: op.origin, stream: op.stream, seq: op.seq });
       return op;
@@ -300,11 +277,8 @@ export class SoakNet {
       },
     };
     this.devs.set(name, dev);
-    if (d.kind === "kds" && !o.store && !process.env.SOAK_NO_SESSION_RECORD) {
-      // HARNESS ADDITION (finding F6 wire-up): a device session has its own `session.open` of type device (protocol-v1, "Attribution of
-      // device-session ops"); the app opens none for a KDS, so its ops would be `actor_unknown`.
-      await rt.engine.record({ intent: "session.open", actor: `device:${d.device_id}`, sid: "s-device", build: () => [{ e: "session", id: "s-device", k: "insert" as const, f: { type: "device" } }] });
-    }
+    // A KDS screen has no PIN: the app's own openDeviceSession (type device, no proof) is called on its first start; the writer renews it per business day.
+    if (d.kind === "kds") await openDeviceSession(rt);
     if (o.openDay) {
       const day = await rt.identity.signIn(this.S("Meena").id, this.S("Meena").pin);
       if (day.ok) {

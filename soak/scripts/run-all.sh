@@ -2,12 +2,11 @@
 # Runs the given soak runs one after the other, each on a FRESH stack (down, up, run): run-all.sh <work-dir> <tag:seed:mode:epoch>...
 #   run-all.sh /tmp/hostry-soak/w2 r1:1:settle:0 r2:2:settle:1 r3:3:settle:0 r4:4:print:0
 # A fresh stack per run is deliberate: identity caps OTP sends per client address per day (40), and a poison event on the bus
-# (finding F14) would otherwise block the next run's consumers. SOAK_SYNC_PATCH=1 (default here) applies patches/svc-sync-credential-brand.patch.
+# (finding F14) would otherwise block the next run's consumers.
 set -uo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 work="$1"
 shift
-export SOAK_SYNC_PATCH="${SOAK_SYNC_PATCH:-1}"
 export SOAK_BILLING_URL=http://127.0.0.1:28107 SOAK_ORDERS_URL=http://127.0.0.1:28106
 for spec in "$@"; do
   IFS=: read -r tag seed mode epoch <<<"$spec"
