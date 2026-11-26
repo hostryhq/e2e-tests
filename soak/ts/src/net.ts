@@ -179,7 +179,7 @@ export class GatedTransport implements SyncTransport {
 /** The real cmd/hub as a child process of the driver, and the few things soakgw still does (internet switch, wall clock, tokens, epoch). */
 export class Ctl {
   private proc: ChildProcess | undefined;
-  /** Called after every hub start (SoakNet sets it): see F27. */
+  /** Called after every hub start (SoakNet sets it): observation only (F27 is fixed in client-core). */
   afterHubStart: () => Promise<void> = () => Promise.resolve();
   constructor(readonly url: string, private readonly fx: Fixture) {}
   private async post(path: string): Promise<void> {
@@ -218,7 +218,21 @@ export class Ctl {
       // The dev key provider is NOT protection (the key sits beside the file), so this hub declares store unprotected; the lift lets it
       // keep customer details anyway so T1 can see where they go. The placement on the tills is what the claim checks.
       SYNC_HUB_DEV_PII_LIFT: "1",
+      // The hub's dev clock (svc-sync c0499fa): loopback /dev/clock, wall time plus an offset the harness sets for the age judgments (T6, T13).
+      SYNC_HUB_DEV_CLOCK_ADDR: this.hubClockAddr(),
     };
+  }
+  /** Loopback address of the hub's /dev/clock: the hub's own port plus 1000 (SOAK_HUB_CLOCK_ADDR overrides). */
+  hubClockAddr(): string {
+    if (process.env.SOAK_HUB_CLOCK_ADDR) return process.env.SOAK_HUB_CLOCK_ADDR;
+    const port = Number(this.fx.hub.addr.split(":")[1]);
+    return `127.0.0.1:${port + 1000}`;
+  }
+  /** Set (`offset_seconds`) or advance (`advance_seconds`) the real hub's clock; returns what the hub then reports. */
+  async hubClock(body: { offset_seconds: number } | { advance_seconds: number }): Promise<{ now: string; offset_seconds: number }> {
+    const r = await fetch(`http://${this.hubClockAddr()}/dev/clock`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(`hub /dev/clock: ${r.status} ${await r.text()}`);
+    return (await r.json()) as { now: string; offset_seconds: number };
   }
   private async listening(): Promise<void> {
     const [host, port] = this.fx.hub.addr.split(":") as [string, string];
@@ -283,7 +297,7 @@ export type Dev = {
   fx: FxDevice;
   rt: Runtime;
   hubT: GatedTransport;
-  /** The device's LAN transport under the gate (its cached session can be dropped, see F27). */
+  /** The device's LAN transport under the gate. */
   lanT: LanTransport;
   cloudT: GatedTransport;
   lan: Link;
@@ -302,35 +316,28 @@ export class SoakNet {
   readonly devs = new Map<string, Dev>();
   readonly ctl: Ctl;
   internet = false;
-  /** F27 evidence: hub starts probed, and how many of them showed the stuck session. */
-  f27 = { probes: 0, reproduced: 0, after: [] as Array<Record<string, unknown>> };
+  /** Run 6 evidence for F27: hub starts observed, and the number of device rounds that failed with "certificate differs" (must stay 0). */
+  hubRestarts = { probes: 0, certificateDiffers: 0, after: [] as Array<Record<string, unknown>> };
   constructor(readonly fx: Fixture, readonly clock: Clock) {
     this.ring = new KeyRing();
     this.ctl = new Ctl(fx.ctl_url, fx);
-    // F27 (client-core LanTransport): the hub makes a new TLS key at every start, and a device's cached LAN session is pinned to the old
-    // certificate: every call then fails with "hub certificate differs from the verified one" until the 15-minute token lapses, because the
-    // transport never drops the session on a pinned-certificate mismatch. The harness first PROVES the failure on one device (the evidence),
-    // then drops every device's session, as a pack refresh would; without that the rest of the day cannot run.
+    // Run 6: F27 is fixed in client-core (a changed hub certificate drops the pinned session and re-handshakes). The harness no longer drops any session.
+    // After every hub start it only OBSERVES: one sync round per powered device with the LAN up, recording whether the round reached the hub and the
+    // errors it threw, so a regression of F27 shows as devices that stay cut off (and fails T5/T1 on its own).
     this.ctl.afterHubStart = async () => {
-      const live = [...this.devs.values()].filter((d) => d.powered && d.lanT.connected && d.lan.up);
-      const probe = live[0];
-      if (probe) {
-        this.f27.probes++;
-        try {
-          await probe.lanT.hello({ protocol: 1 });
-        } catch (e) {
-          if (/certificate differs/.test(String(e))) this.f27.reproduced++;
-        }
-      }
-      for (const d of this.devs.values()) d.lanT.drop();
+      this.hubRestarts.probes++;
       const snap: Record<string, unknown> = { at: this.clock.ms };
       for (const d of this.devs.values()) {
-        if (!d.powered) continue;
+        if (!d.powered || !d.lan.up) continue;
         const before = { ...d.hubT.calls };
+        const errs0 = new Map(d.hubT.errors);
         await d.rt.sync.syncNow().catch((e) => (snap[`${d.fx.name}_err`] = String(e).slice(0, 120)));
-        snap[d.fx.name] = { lan_up: d.lan.up, connected: d.lanT.connected, calls: { hello: d.hubT.calls.hello - before.hello, push: d.hubT.calls.push - before.push, refused: d.hubT.calls.refused - before.refused }, status: d.rt.sync.status() };
+        const newErrs = [...d.hubT.errors].filter(([k, n]) => (errs0.get(k) ?? 0) < n).map(([k]) => k);
+        const stuck = newErrs.some((m) => /certificate differs/.test(m));
+        if (stuck) this.hubRestarts.certificateDiffers++;
+        snap[d.fx.name] = { connected: d.lanT.connected, calls: { hello: d.hubT.calls.hello - before.hello, push: d.hubT.calls.push - before.push }, errors: newErrs };
       }
-      this.f27.after.push(snap);
+      this.hubRestarts.after.push(snap);
     };
   }
 
@@ -356,7 +363,7 @@ export class SoakNet {
     const net: Link = { up: o.links?.net ?? false };
     const offsetMs = o.offsetMs ?? 0;
     if (offsetMs) this.offsets.set(name, offsetMs);
-    const devNow = (): number => this.clock.ms + offsetMs;
+    const devNow = (): number => this.clock.ms + offsetMs + (this.deviceSkew.get(name) ?? 0);
     const pack = await loadPack(this.fx, d);
     // The LAN channel of the node runtime (client-core/node): TLS 1.3, any certificate accepted and the peer proven by helloLan and openLanSession
     // with the identity-signed credentials of the packs (the hub's own credential is checked against the identity keys of THIS device's pack).
@@ -441,6 +448,38 @@ export class SoakNet {
   }
 
   readonly offsets = new Map<string, number>();
+  /**
+   * A device's OWN clock stepped forward for a moment (T6/T13): the print age of a KOT is judged by the printing device's clock (client-core PrintService, 15
+   * minutes), which no hub or cloud sets. The virtual day cannot run 25 minutes ahead of the real hub, gateway and identity (run 5), so the one device that
+   * judges the ticket's age is stepped forward around that judgment, with no sync and no op in the window, and stepped back.
+   */
+  readonly deviceSkew = new Map<string, number>();
+
+  /**
+   * The real hub's dev clock (SYNC_HUB_DEV_CLOCK_ADDR) run `seconds` ahead, past the 15-minute LAN session: every powered device with the LAN up syncs against
+   * that hub (its cached session has lapsed by the hub's clock), then the hub returns to wall time and every device syncs again. Observation only: what each
+   * round did, so the claim can say that no device was cut off and the hubs's clock did not move a device's op stamps.
+   */
+  async agedHubRounds(seconds: number): Promise<Record<string, unknown>> {
+    const out: Record<string, unknown> = { seconds };
+    const round = async (label: string): Promise<void> => {
+      const r: Record<string, unknown> = {};
+      for (const d of this.devs.values()) {
+        if (!d.powered || !d.lan.up) continue;
+        const e0 = new Map(d.hubT.errors);
+        const c0 = { ...d.hubT.calls };
+        let thrown: string | undefined;
+        await d.rt.sync.syncNow().catch((e) => (thrown = String(e).slice(0, 120)));
+        r[d.fx.name] = { hello: d.hubT.calls.hello - c0.hello, pull: d.hubT.calls.pull - c0.pull, push: d.hubT.calls.push - c0.push, new_errors: [...d.hubT.errors].filter(([k, n]) => (e0.get(k) ?? 0) < n).map(([k]) => k), ...(thrown ? { thrown } : {}) };
+      }
+      out[label] = r;
+    };
+    out.clock_ahead = await this.ctl.hubClock({ advance_seconds: seconds });
+    await round("ahead");
+    out.clock_back = await this.ctl.hubClock({ offset_seconds: 0 });
+    await round("back");
+    return out;
+  }
   readonly retired: Dev[] = [];
 
   dev(name: string): Dev {

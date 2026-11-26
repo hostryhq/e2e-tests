@@ -31,7 +31,7 @@ export async function scenarioClaims(i: Inputs): Promise<Claim[]> {
   const dupId = s.dupNumber?.secondBillId; // the seeded duplicate stays out of the generic totals; S5 judges it
   const bills = (await rows("bill")).filter((b) => b.id !== dupId);
   const notes = await rows("credit_note");
-  const pays = (await rows("payment")).filter((p) => p.bill_id !== dupId);
+  const pays = await rows("payment"); // F30: the quarantined duplicate's payments stay in the tender totals; S5 asserts billing's payment_unmatched
   const sBills = await svc.all("billing", "/v1/bills");
   const sNotes = await svc.all("billing", "/v1/credit-notes");
   const sPays = await svc.all("billing", "/v1/payments");
@@ -85,7 +85,7 @@ export async function scenarioClaims(i: Inputs): Promise<Claim[]> {
   // S5 (H5)
   {
     const d = s.dupNumber;
-    out.push(asClaim("S5", "Duplicate invoice number under two bill ids", duplicateDocumentVerdict(s, d ? gatewayRows(tenant, d.secondOp) : [], { bills: sBills.map((b) => ({ id: b.id, number: b.number })), exceptions: bExc })));
+    out.push(asClaim("S5", "Duplicate invoice number under two bill ids", duplicateDocumentVerdict(s, d ? gatewayRows(tenant, d.secondOp) : [], { bills: sBills.map((b) => ({ id: b.id, number: b.number })), exceptions: bExc, secondBillPaymentIds: pays.filter((p) => p.bill_id === d?.secondBillId).map((p) => String(p.id)) })));
   }
 
   // S6 (P2-H1): the gateway judges "missing" ApprovalMaxAge (120 s) plus ApprovalMissingGrace (10 min) after it stored the op, on its own WALL
@@ -113,10 +113,14 @@ export async function scenarioClaims(i: Inputs): Promise<Claim[]> {
     const r = s.rebillPaid;
     const ids = [
       r?.billId,
-      ...(r?.creditNumber ? sNotes.filter((n) => n.number === r.creditNumber).map((n) => n.id as string) : []),
-      ...(r?.replacementNumbers ?? []).flatMap((num) => sBills.filter((b) => b.number === num).map((b) => b.id as string)),
+      ...(r?.approved ? sNotes.filter((n) => n.number === r.approved!.creditNumber).map((n) => n.id as string) : []),
+      ...(r?.approved?.replacementNumbers ?? []).flatMap((num) => sBills.filter((b) => b.number === num).map((b) => b.id as string)),
     ].filter((x): x is string => !!x);
-    out.push(asClaim("S7", "Re-bill after payment without approval", rebillAfterPaymentVerdict(s, bExc, ids)));
+    const known = {
+      credit: !!r?.approved && sNotes.some((n) => n.number === r.approved!.creditNumber),
+      replacements: (r?.approved?.replacementNumbers ?? []).filter((num) => sBills.some((b) => b.number === num)).length,
+    };
+    out.push(asClaim("S7", "Re-bill of a paid bill: cashier refused, manager with another approver's approval accepted", rebillAfterPaymentVerdict(s, bExc, ids, known)));
   }
   return out;
 }

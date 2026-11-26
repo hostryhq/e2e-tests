@@ -104,22 +104,41 @@ export async function midDayScenarios(env: StepEnv): Promise<void> {
     await net.sync();
   });
 
-  // S7 (P2-H2): a paid bill is re-billed with no approval. Refused on the device, or flagged by billing.
-  await step("S7 re-bill after payment without approval", async () => {
+  // S7 (P2-H2, F29), as built: a re-bill of a paid bill always cites an approval, even from a manager. A cashier without one is refused on the device;
+  // a manager re-bills citing another approver's approval and billing accepts it without `rebill_after_payment`.
+  await step("S7 re-bill after payment: cashier refused, manager with an approval accepted", async () => {
     const t = await sale(env, a07);
     const b = await env.pay(a07, t);
     if (!b) throw new Error("no bill");
     await net.sync();
     const paymentsOnBill = list(a07)("payment").filter((p) => p.bill_id === b.billId).length;
-    await a07.signIn("Meena");
+    const input = { billId: b.billId, gstin: "33ABCDE1234F1Z5", reasonCodeId: "rc-cn-gstin" };
+    await a07.signIn("Asha");
+    let cashier: NonNullable<ScenarioFacts["rebillPaid"]>["cashier"];
+    const opsBefore = a07.opLog.length;
     try {
-      const rb = await T.rebillBill(a07.rt.ctx, { billId: b.billId, gstin: "33ABCDE1234F1Z5", reasonCodeId: "rc-cn-gstin" });
-      scn.rebillPaid = { billId: b.billId, paymentsOnBill, outcome: "done", creditNumber: rb.credit, replacementNumbers: rb.bills };
+      await T.rebillBill(a07.rt.ctx, input);
+      cashier = { outcome: "done" };
     } catch (e) {
-      scn.rebillPaid = { billId: b.billId, paymentsOnBill, outcome: "refused", code: (e as { code?: string }).code ?? (e instanceof Error ? e.name : String(e)), replacementNumbers: [] };
+      cashier = { outcome: "refused", code: (e as { code?: string }).code ?? (e instanceof Error ? e.name : String(e)) };
     }
+    if (cashier.outcome === "refused" && a07.opLog.length !== opsBefore) throw new Error("the refused re-bill wrote an op");
+    scn.rebillPaid = { billId: b.billId, paymentsOnBill, cashier };
+    const rb = await rebillWithApproval(env, a07, input, "Meena", "Anand");
+    scn.rebillPaid.approved = { approver: "Anand", requester: "Meena", creditNumber: rb.credit, replacementNumbers: rb.bills };
     await net.sync();
   });
+}
+
+/** The manager (signed in as `requester`) re-bills `input` citing an approval that `approver` grants with a PIN (bound to the plan the op then uses). */
+export async function rebillWithApproval(env: StepEnv, d: Dev, input: Parameters<typeof T.rebillBill>[1], requester: "Asha" | "Ravi" | "Meena" | "Anand", approver: "Asha" | "Ravi" | "Meena" | "Anand"): Promise<{ credit: string; bills: string[] }> {
+  await d.signIn(requester);
+  const plan = T.planRebill(d.rt.ctx, input);
+  const binding = T.rebillBinding(input.billId, input.reasonCodeId, plan);
+  if (!binding) throw new Error("the re-bill of a paid bill needs no approval binding: the plan names no approval reason");
+  const ap = await d.rt.identity.approve(env.net.S(approver).id, env.net.S(approver).pin, binding.permission, env.net.S(requester).id, binding);
+  if (!ap.ok) throw new Error(`approval ${binding.permission} from ${approver}: ${ap.reason}`);
+  return T.rebillBill(d.rt.ctx, { ...input, approvalId: ap.approvalId, plan });
 }
 
 /** S4 (H4): A08 (a billing till; a waiter has no invoice series in the real pack) has a clock seven minutes fast. It issues a bill that the closing counter holds BEFORE it closes; no virtual time passes before the close. */

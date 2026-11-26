@@ -70,7 +70,14 @@ export type ScenarioFacts = {
   /** S6: an override citing an approval nobody granted. */
   fakeApproval?: { approvalId: string; intent: string; op: OpRef; billId?: string };
   /** S7: re-bill of a bill that already carries a payment, without approval. */
-  rebillPaid?: { billId: string; paymentsOnBill: number; outcome: "refused" | "done"; code?: string; creditNumber?: string; replacementNumbers: string[] };
+  rebillPaid?: {
+    billId: string;
+    paymentsOnBill: number;
+    /** The cashier's attempt without an approval. */
+    cashier: { outcome: "refused" | "done"; code?: string };
+    /** The manager's re-bill citing another approver's approval (as built: any re-bill of a paid bill cites one, F29). */
+    approved?: { approver: string; requester: string; creditNumber: string; replacementNumbers: string[] };
+  };
   arrival?: Arrival;
 };
 
@@ -78,7 +85,7 @@ export const emptyScenarioFacts = (): ScenarioFacts => ({ payCalls: 0, presents:
 
 // ---- rows read from the services ----------------------------------------------------------------------------------------------------------
 
-export type ExceptionRow = { kind: string; subject_id?: string; subject_kind?: string; status?: string };
+export type ExceptionRow = { kind: string; subject_id?: string; subject_kind?: string; status?: string; severity?: string };
 export type RevisionRow = { origin_device_id: string; op_from_seq: number; op_to_seq: number; cause?: string; added_totals?: { total?: { amount_paise?: number }; bill_count?: number } };
 export type GatewayOpRow = { status: string; reason: string; marks: string };
 
@@ -224,7 +231,7 @@ export function zCoverageVerdict(s: ScenarioFacts, revisions: RevisionRow[], sum
  * The same number under a second bill id is refused as `duplicate_document` at the gateway, the first op keeps the number in billing; if
  * billing nevertheless holds both, it must say so with a duplicate exception.
  */
-export function duplicateDocumentVerdict(s: ScenarioFacts, gatewayRowsOfSecondOp: GatewayOpRow[], billing: { bills: Array<{ id: string; number: string }>; exceptions: ExceptionRow[] }): Verdict {
+export function duplicateDocumentVerdict(s: ScenarioFacts, gatewayRowsOfSecondOp: GatewayOpRow[], billing: { bills: Array<{ id: string; number: string }>; exceptions: ExceptionRow[]; secondBillPaymentIds: string[] }): Verdict {
   const { v, check } = verdict();
   const d = s.dupNumber;
   if (!check(!!d, "the same number was issued under two bill ids", "the duplicate number was not seeded (script step failed)")) return v;
@@ -236,6 +243,13 @@ export function duplicateDocumentVerdict(s: ScenarioFacts, gatewayRowsOfSecondOp
   const firstKeeps = ids.length === 1 && ids[0] === d!.firstBillId;
   const bothButSaid = ids.length === 2 && ids.includes(d!.firstBillId) && ids.includes(d!.secondBillId) && dupExc.length >= 1;
   check(firstKeeps || bothButSaid, firstKeeps ? "billing kept the number with the first bill only" : "billing holds both bills and reports a duplicate exception", `billing holds ${ids.length} bill(s) with ${d!.number} (${JSON.stringify(ids.map((i) => (i === d!.firstBillId ? "first" : i === d!.secondBillId ? "second" : "other")))}) and ${dupExc.length} duplicate exception(s)`);
+  // F30 / O2-22: the quarantined bill's payments still reach billing. The money stays in the tender totals (the claims no longer exclude it) and billing
+  // says so: `payment_unmatched`, severity warning, open, on each such payment.
+  check(billing.secondBillPaymentIds.length > 0, `${billing.secondBillPaymentIds.length} payment(s) were recorded on the second bill`, "the second bill carries no payment: the payment_unmatched check is not evidenced");
+  for (const pid of billing.secondBillPaymentIds) {
+    const un = billing.exceptions.filter((e) => e.kind === "payment_unmatched" && e.subject_id === pid);
+    check(un.length === 1 && open(un[0]!) && un[0]!.severity === "warning", `payment ${pid.slice(0, 8)} of the quarantined bill carries one open payment_unmatched (warning)`, `payment ${pid.slice(0, 8)} of the quarantined bill: ${un.length} payment_unmatched exception(s) ${JSON.stringify(un.map((e) => [e.status, e.severity]))}, expected one open warning`);
+  }
   return v;
 }
 
@@ -255,29 +269,31 @@ export function fakeApprovalVerdict(s: ScenarioFacts, gatewayRows: GatewayOpRow[
   return v;
 }
 
-// ---- S7: re-bill after payment (P2-H2) ----------------------------------------------------------------------------------------------------
+// ---- S7: re-bill after payment (P2-H2, F29) ----------------------------------------------------------------------------------------------
 
-/** Device refusals that name the rule (a re-bill of a paid bill, or a needed approval); a missing permission does not count. */
-export const REBILL_REFUSAL_CODES = ["refused", "approval_needed"];
-/** Ruling 8: a re-bill of a bill that carries a payment is `rebill_after_payment`. */
+/** Device refusals that name the rule (a re-bill of a paid bill needs an approval); a missing permission does not count. */
+export const REBILL_REFUSAL_CODES = ["approval_needed"];
+/** Ruling 8: a re-bill of a bill that carries a payment without a cited approval is `rebill_after_payment`. */
 export const REBILL_DETECTOR = /^rebill_after_payment$/;
 
 /**
- * Ruling 8: a re-bill of a bill that carries a payment is refused on the device without approval, or, if it was made, billing flags it.
- * `subjectIds` are the original bill, its credit note and the replacement bills as billing knows them.
+ * As built (app-restaurant 3b80cb6): a re-bill of a bill that carries a payment always cites an approval, even from a manager. A cashier without one is
+ * refused on the device; a manager citing another approver's approval is accepted by billing without `rebill_after_payment`. `known` says how much of the
+ * re-bill billing projected (the absence of the exception means nothing if billing never saw the group).
  */
-export function rebillAfterPaymentVerdict(s: ScenarioFacts, exceptions: ExceptionRow[], subjectIds: string[]): Verdict {
+export function rebillAfterPaymentVerdict(s: ScenarioFacts, exceptions: ExceptionRow[], subjectIds: string[], known: { credit: boolean; replacements: number }): Verdict {
   const { v, check } = verdict();
   const r = s.rebillPaid;
-  if (!check(!!r, "a re-bill of a paid bill was attempted without approval", "the re-bill after payment was not attempted (script step failed)")) return v;
+  if (!check(!!r, "a cashier attempted a re-bill of a paid bill without approval", "the re-bill after payment was not attempted (script step failed)")) return v;
   check(r!.paymentsOnBill > 0, `the bill carried ${r!.paymentsOnBill} payment(s)`, "the bill had no payment: the scenario is not evidenced");
-  if (r!.outcome === "refused") {
-    check(REBILL_REFUSAL_CODES.includes(r!.code ?? ""), `the device refused it (${r!.code})`, `the device refused it for another reason (${r!.code}), not for the payment`);
-    return v;
-  }
+  check(r!.cashier.outcome === "refused" && REBILL_REFUSAL_CODES.includes(r!.cashier.code ?? ""), `the cashier was refused on the device (${r!.cashier.code})`, r!.cashier.outcome === "done" ? "the device let a cashier re-bill a paid bill without an approval" : `the device refused it for another reason (${r!.cashier.code}), not for the missing approval`);
+  const a = r!.approved;
+  if (!check(!!a, `a manager re-billed it citing ${a?.approver ?? "another approver"}'s approval`, "the manager's re-bill with a cited approval did not complete (script step failed)")) return v;
+  check(a!.approver !== a!.requester, `the approval came from another approver than the requester (${a!.approver} for ${a!.requester})`, "the approver is the requester");
+  check(known.credit && known.replacements === a!.replacementNumbers.length && a!.replacementNumbers.length > 0, `billing holds the credit note and ${known.replacements} replacement bill(s) of the re-bill`, `billing holds ${known.credit ? "the" : "no"} credit note and ${known.replacements} of ${a!.replacementNumbers.length} replacement bill(s): the re-bill did not arrive, so the absence of an exception is not evidence`);
   const ids = new Set(subjectIds);
-  const found = exceptions.filter((e) => REBILL_DETECTOR.test(e.kind) && open(e) && e.subject_id !== undefined && ids.has(e.subject_id));
-  check(found.length >= 1, `the device allowed it and billing flagged it: ${found.map((e) => e.kind).join(", ")}`, `the re-bill of a paid bill was made without approval and billing raised no re-bill exception (kinds seen: ${[...new Set(exceptions.map((e) => e.kind))].join(", ") || "none"}): silent`);
+  const found = exceptions.filter((e) => REBILL_DETECTOR.test(e.kind) && e.subject_id !== undefined && ids.has(e.subject_id));
+  check(found.length === 0, "billing raised no rebill_after_payment for the approved re-bill", `billing raised ${found.length} rebill_after_payment exception(s) although the re-bill cited an approval: ${JSON.stringify(found.map((e) => [e.subject_kind, e.status]))}`);
   return v;
 }
 

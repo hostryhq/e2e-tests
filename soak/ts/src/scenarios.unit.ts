@@ -187,25 +187,37 @@ describe("S5 duplicate invoice number", () => {
   const s = emptyScenarioFacts();
   s.dupNumber = { number: "AAA/2627/000042", firstBillId: "b1", secondBillId: "b2", secondOp: { origin: A, seq: 50 } };
   const refused = [{ status: "quarantined", reason: "duplicate_document", marks: "" }];
-  it("passes when the gateway refuses the second op and billing keeps the number with the first bill", () => {
-    expect(duplicateDocumentVerdict(s, refused, { bills: [{ id: "b1", number: "AAA/2627/000042" }], exceptions: [] }).ok).toBe(true);
+  const unmatched = { kind: "payment_unmatched", subject_id: "pay2-xxxxxxxx", status: "open", severity: "warning" };
+  const b = (over: Record<string, unknown>) => ({ bills: [{ id: "b1", number: "AAA/2627/000042" }], exceptions: [unmatched], secondBillPaymentIds: ["pay2-xxxxxxxx"], ...over }) as Parameters<typeof duplicateDocumentVerdict>[2];
+  it("passes when the gateway refuses the second op, billing keeps the number with the first bill and warns about the orphaned payment", () => {
+    const v = duplicateDocumentVerdict(s, refused, b({}));
+    expect(v.ok, fails(v)).toBe(true);
   });
   it("passes when billing holds both bills but reports a duplicate exception", () => {
-    const v = duplicateDocumentVerdict(s, refused, { bills: [{ id: "b1", number: "AAA/2627/000042" }, { id: "b2", number: "AAA/2627/000042" }], exceptions: [{ kind: "duplicate_number", status: "open" }] });
+    const v = duplicateDocumentVerdict(s, refused, b({ bills: [{ id: "b1", number: "AAA/2627/000042" }, { id: "b2", number: "AAA/2627/000042" }], exceptions: [unmatched, { kind: "duplicate_number", status: "open" }] }));
     expect(v.ok, fails(v)).toBe(true);
   });
   it("FAILS when the gateway accepted the second op silently (the review's finding)", () => {
-    const v = duplicateDocumentVerdict(s, [{ status: "accepted", reason: "", marks: "" }], { bills: [{ id: "b1", number: "AAA/2627/000042" }], exceptions: [] });
+    const v = duplicateDocumentVerdict(s, [{ status: "accepted", reason: "", marks: "" }], b({}));
     expect(fails(v)).toMatch(/did not refuse the second op as duplicate_document/);
-    expect(duplicateDocumentVerdict(s, [{ status: "accepted", reason: "duplicate_document", marks: "" }], { bills: [{ id: "b1", number: "AAA/2627/000042" }], exceptions: [] }).ok).toBe(false);
+    expect(duplicateDocumentVerdict(s, [{ status: "accepted", reason: "duplicate_document", marks: "" }], b({})).ok).toBe(false);
   });
   it("FAILS when billing holds both bills with no exception, or the second bill holds the number", () => {
-    expect(duplicateDocumentVerdict(s, refused, { bills: [{ id: "b1", number: "AAA/2627/000042" }, { id: "b2", number: "AAA/2627/000042" }], exceptions: [] }).ok).toBe(false);
-    expect(duplicateDocumentVerdict(s, refused, { bills: [{ id: "b2", number: "AAA/2627/000042" }], exceptions: [] }).ok).toBe(false);
+    expect(duplicateDocumentVerdict(s, refused, b({ bills: [{ id: "b1", number: "AAA/2627/000042" }, { id: "b2", number: "AAA/2627/000042" }] })).ok).toBe(false);
+    expect(duplicateDocumentVerdict(s, refused, b({ bills: [{ id: "b2", number: "AAA/2627/000042" }] })).ok).toBe(false);
   });
   it("FAILS when the gateway holds no row, and when not seeded", () => {
-    expect(fails(duplicateDocumentVerdict(s, [], { bills: [{ id: "b1", number: "AAA/2627/000042" }], exceptions: [] }))).toMatch(/holds no row/);
-    expect(duplicateDocumentVerdict(emptyScenarioFacts(), [], { bills: [], exceptions: [] }).ok).toBe(false);
+    expect(fails(duplicateDocumentVerdict(s, [], b({})))).toMatch(/holds no row/);
+    expect(duplicateDocumentVerdict(emptyScenarioFacts(), [], b({ bills: [], exceptions: [] })).ok).toBe(false);
+  });
+  it("FAILS when the orphaned payment has no payment_unmatched, a closed one, or a severity other than warning (F30)", () => {
+    expect(fails(duplicateDocumentVerdict(s, refused, b({ exceptions: [] })))).toMatch(/0 payment_unmatched/);
+    expect(duplicateDocumentVerdict(s, refused, b({ exceptions: [{ ...unmatched, status: "resolved" }] })).ok).toBe(false);
+    expect(duplicateDocumentVerdict(s, refused, b({ exceptions: [{ ...unmatched, severity: "high" }] })).ok).toBe(false);
+    expect(duplicateDocumentVerdict(s, refused, b({ exceptions: [{ ...unmatched, subject_id: "other" }] })).ok).toBe(false);
+  });
+  it("FAILS when the second bill carries no payment (the check would be vacuous)", () => {
+    expect(fails(duplicateDocumentVerdict(s, refused, b({ secondBillPaymentIds: [], exceptions: [] })))).toMatch(/not evidenced/);
   });
 });
 
@@ -233,28 +245,44 @@ describe("S6 override citing a non-existent approval", () => {
 
 // ---- S7 re-bill after payment (P2-H2) ------------------------------------------------------------------------------------------------------
 
-describe("S7 re-bill after payment without approval", () => {
+describe("S7 re-bill after payment: cashier refused, manager with another approver's approval accepted", () => {
   const made = (over: Partial<NonNullable<ScenarioFacts["rebillPaid"]>>): ScenarioFacts => {
     const s = emptyScenarioFacts();
-    s.rebillPaid = { billId: "b1", paymentsOnBill: 1, outcome: "done", creditNumber: "CN/1", replacementNumbers: ["AAA/2627/000009"], ...over };
+    s.rebillPaid = {
+      billId: "b1",
+      paymentsOnBill: 1,
+      cashier: { outcome: "refused", code: "approval_needed" },
+      approved: { approver: "Anand", requester: "Meena", creditNumber: "CN/1", replacementNumbers: ["AAA/2627/000009"] },
+      ...over,
+    };
     return s;
   };
-  it("passes when the device refused it for the payment", () => {
-    expect(rebillAfterPaymentVerdict(made({ outcome: "refused", code: "refused" }), [], ["b1"]).ok).toBe(true);
+  const arrived = { credit: true, replacements: 1 };
+  it("passes: the cashier is refused for the missing approval, the approved re-bill arrived and billing raised nothing", () => {
+    const v = rebillAfterPaymentVerdict(made({}), [{ kind: "late_document", subject_id: "b1", status: "open" }], ["b1", "cn1"], arrived);
+    expect(v.ok, fails(v)).toBe(true);
   });
-  it("FAILS when the device refused for another reason (a missing permission does not show the rule)", () => {
-    expect(rebillAfterPaymentVerdict(made({ outcome: "refused", code: "PermissionError" }), [], ["b1"]).ok).toBe(false);
+  it("FAILS when the device let the cashier re-bill a paid bill without an approval (F29 returns)", () => {
+    expect(fails(rebillAfterPaymentVerdict(made({ cashier: { outcome: "done" } }), [], ["b1"], arrived))).toMatch(/let a cashier re-bill/);
   });
-  it("passes when the re-bill was made and billing flags it", () => {
-    expect(rebillAfterPaymentVerdict(made({}), [{ kind: "rebill_after_payment", subject_id: "b1", status: "open" }], ["b1", "cn1"]).ok).toBe(true);
+  it("FAILS when the cashier was refused for another reason (a missing permission does not show the rule)", () => {
+    expect(rebillAfterPaymentVerdict(made({ cashier: { outcome: "refused", code: "PermissionError" } }), [], ["b1"], arrived).ok).toBe(false);
   });
-  it("FAILS when the re-bill was made and nothing was raised (silent skimming path)", () => {
-    expect(fails(rebillAfterPaymentVerdict(made({}), [{ kind: "late_document", subject_id: "b1", status: "open" }], ["b1"]))).toMatch(/silent/);
-    expect(rebillAfterPaymentVerdict(made({}), [{ kind: "rebill_after_payment", subject_id: "other", status: "open" }], ["b1"]).ok).toBe(false);
+  it("FAILS when billing raises rebill_after_payment for the re-bill that cited an approval", () => {
+    const v = rebillAfterPaymentVerdict(made({}), [{ kind: "rebill_after_payment", subject_id: "cn1", subject_kind: "credit_note", status: "open" }], ["b1", "cn1"], arrived);
+    expect(fails(v)).toMatch(/raised 1 rebill_after_payment/);
   });
-  it("FAILS when the bill carried no payment, or the attempt was not made", () => {
-    expect(rebillAfterPaymentVerdict(made({ outcome: "refused", code: "refused", paymentsOnBill: 0 }), [], ["b1"]).ok).toBe(false);
-    expect(rebillAfterPaymentVerdict(emptyScenarioFacts(), [], []).ok).toBe(false);
+  it("ignores a rebill_after_payment on an unrelated subject", () => {
+    expect(rebillAfterPaymentVerdict(made({}), [{ kind: "rebill_after_payment", subject_id: "other", status: "open" }], ["b1"], arrived).ok).toBe(true);
+  });
+  it("FAILS when billing never saw the re-bill (an absent exception would mean nothing)", () => {
+    expect(fails(rebillAfterPaymentVerdict(made({}), [], ["b1"], { credit: false, replacements: 0 }))).toMatch(/did not arrive/);
+  });
+  it("FAILS when the manager's approved re-bill did not complete, the approver is the requester, the bill had no payment, or nothing was attempted", () => {
+    expect(fails(rebillAfterPaymentVerdict(made({ approved: undefined }), [], ["b1"], arrived))).toMatch(/did not complete/);
+    expect(rebillAfterPaymentVerdict(made({ approved: { approver: "Meena", requester: "Meena", creditNumber: "CN/1", replacementNumbers: ["x"] } }), [], ["b1"], arrived).ok).toBe(false);
+    expect(rebillAfterPaymentVerdict(made({ paymentsOnBill: 0 }), [], ["b1"], arrived).ok).toBe(false);
+    expect(rebillAfterPaymentVerdict(emptyScenarioFacts(), [], [], arrived).ok).toBe(false);
   });
 });
 

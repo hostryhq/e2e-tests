@@ -6,7 +6,7 @@ import type { BillRow } from "@hostry/client-core";
 import { publishConfig, type ConfigReport } from "./config";
 import { Clock, SoakNet, type Dev } from "./net";
 import { rng } from "./rng";
-import { duplicateNumber, fastClockBill, midDayScenarios, recordLateOps, totalProbe, type StepEnv } from "./scenario-steps";
+import { duplicateNumber, fastClockBill, midDayScenarios, rebillWithApproval, recordLateOps, totalProbe, type StepEnv } from "./scenario-steps";
 import { emptyScenarioFacts, type ScenarioFacts } from "./scenarios";
 
 /** What the script did and what it deliberately seeded: the claims check the converged state against these. */
@@ -19,7 +19,7 @@ export type Facts = {
   z: { zNumber: string; totalPaise: number; billCount: number } | undefined;
   z2: { zNumber: string; totalPaise: number; billCount: number } | undefined;
   blockedCloseCode: string | undefined;
-  blackout: { given?: string; stale?: string; recent?: string; bookNumber?: string; bookEntriesMade: number; settleRounds?: number | undefined; settleWallMs?: number };
+  blackout: { given?: string; stale?: string; recent?: string; bookNumber?: string; bookEntriesMade: number; settleRounds?: number | undefined; settleWallMs?: number; staleAgeMin?: number; recentAgeMin?: number; agedHub?: Record<string, unknown> };
   wipeSettleRounds?: number | undefined;
   doublePay: { billId: string; payments: string[] } | undefined;
   race: { lineId: string; checks: string[] } | undefined;
@@ -324,7 +324,7 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     }
     const rbTarget = settledBills.filter((b) => b.dev.fx.name === "A07")[0];
     if (rbTarget) {
-      const rb = await T.rebillBill(a07.rt.ctx, { billId: rbTarget.billId, gstin: "33ABCDE1234F1Z5", reasonCodeId: "rc-cn-gstin" });
+      const rb = await rebillWithApproval(env, a07, { billId: rbTarget.billId, gstin: "33ABCDE1234F1Z5", reasonCodeId: "rc-cn-gstin" }, "Meena", "Anand"); // paid: the approval is cited (F29)
       f.creditNotes.push(rb.credit);
       f.rebills.push(...rb.bills);
     }
@@ -428,8 +428,9 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     const [stale] = await T.sendKot(cap0.rt.ctx, t3.checkId);
     cap0.rt.fakes.hub.remove(KITCHEN_PRINTER, stale!);
     f.blackout.stale = stale;
-    // (T13 needs a ticket older than 15 minutes; the virtual day cannot run that far ahead of the real hub, see Clock: not exercised)
-    clock.minutes(20); // the stale ticket is 21 minutes old when the LAN returns (the station holds tickets older than 15)
+    // T13 needs a ticket older than 15 minutes when the LAN returns. The virtual day cannot run that far ahead of the real hub (Clock), so the printing
+    // device's own clock is stepped forward for the ingest below (net.deviceSkew); the recent ticket is ingested on the unskewed clock.
+    clock.minutes(1);
     await T.addLine(cap0.rt.ctx, t3.checkId, { itemId: "it-vada", qtyMilli: 1000 });
     const [recent] = await T.sendKot(cap0.rt.ctx, t3.checkId);
     cap0.rt.fakes.hub.remove(KITCHEN_PRINTER, recent!);
@@ -482,8 +483,25 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
   }
   // What arrived on the KDS after the LAN returned: the ticket handed over by hand and the stale one never print as originals.
   await step("arrived KOTs on the kitchen screen", async () => {
-    for (const id of [f.blackout.recent, f.blackout.given, f.blackout.stale]) if (id) T.ingestArrivedKot(kitchen.rt.ctx, id);
+    const kot = (id: string | undefined): { created: number } => ({ created: Date.parse(String(kitchen.rt.data.snapshot().list<{ id: string; created_at?: string }>("kot").find((k) => k.id === id)?.created_at ?? "")) });
+    // The stale and the handed-over ticket have waited 25 minutes by the kitchen's clock (the station holds tickets older than 15); the recent one has not.
+    net.deviceSkew.set("K9K", 25 * 60_000);
+    try {
+      for (const id of [f.blackout.given, f.blackout.stale]) if (id) T.ingestArrivedKot(kitchen.rt.ctx, id);
+      await kitchen.rt.fakes.hub.flush();
+    } finally {
+      net.deviceSkew.delete("K9K");
+    }
+    if (f.blackout.recent) T.ingestArrivedKot(kitchen.rt.ctx, f.blackout.recent);
     await kitchen.rt.fakes.hub.flush();
+    const staleCreated = kot(f.blackout.stale).created;
+    f.blackout.staleAgeMin = Number.isNaN(staleCreated) ? undefined : Math.round((kitchen.rt.now() + 25 * 60_000 - staleCreated) / 60_000);
+    const recentCreated = kot(f.blackout.recent).created;
+    f.blackout.recentAgeMin = Number.isNaN(recentCreated) ? undefined : Math.round((kitchen.rt.now() - recentCreated) / 60_000);
+  });
+  // The real hub's own clock, 16 minutes ahead (past its 15-minute LAN session) and back, with the devices syncing in both states (dev clock, svc-sync c0499fa).
+  await step("hub clock 16 minutes ahead and back", async () => {
+    f.blackout.agedHub = await net.agedHubRounds(16 * 60);
   });
   await net.sync();
   // The hub machine dies for good: new disk. Every device still holds its own ops and re-offers them (T5: nothing lost).

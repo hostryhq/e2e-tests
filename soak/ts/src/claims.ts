@@ -57,12 +57,13 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
   const a07 = by("A07");
   const extra: R = {};
 
-  // The seeded duplicate (S5) is a second bill under an existing number: it stays out of the generic totals, numbers and prints below and is judged by S5.
+  // The seeded duplicate (S5) is a second bill under an existing number: its bill stays out of the generic bill totals, numbers and prints below (its payments do not, F30) and is judged by S5.
   const dupSecond = f.scn.dupNumber?.secondBillId;
   const dupNumber = f.scn.dupNumber?.number;
   const bills = ((await rowsOf(a07, "bill")) as unknown as BillRow[]).filter((b) => b.id !== dupSecond);
   const notes = (await rowsOf(a07, "credit_note")) as unknown as CreditNoteRow[];
-  const pays = (await rowsOf(a07, "payment")).filter((p) => p.bill_id !== dupSecond);
+  // F30 / O2-22: the quarantined duplicate's payments stay in the tender totals (billing counts them and raises payment_unmatched, which S5 asserts).
+  const pays = await rowsOf(a07, "payment");
   const refunds = await rowsOf(a07, "refund");
 
   // ---- services ----
@@ -562,6 +563,12 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     const manual = bills.filter((b) => b.number === f.blackout.bookNumber);
     t.ok(f.blackout.bookEntriesMade === 2 && manual.length === 1, `the paper page typed twice (${f.blackout.bookEntriesMade} entries) is ${manual.length} bill: ${f.blackout.bookNumber}`, `the page typed ${f.blackout.bookEntriesMade} times produced ${manual.length} bill row(s)`);
     t.ok((await rowsOf(kitchen, "kot_handover")).length >= 1, "the handover is recorded and listed on the KDS side", "no kot_handover row reached the KDS");
+    // The ages the claim rests on are measured, not assumed: the stale ticket is older than the station's 15 minutes, the recent one is not.
+    t.ok((f.blackout.staleAgeMin ?? 0) > 15 && (f.blackout.recentAgeMin ?? 99) < 15, `the stale ticket was ${f.blackout.staleAgeMin} min old at the station and the recent one ${f.blackout.recentAgeMin} min`, `ticket ages at the station: stale ${f.blackout.staleAgeMin}, recent ${f.blackout.recentAgeMin} (need stale over 15, recent under 15)`);
+    // The real hub's clock 16 minutes ahead (its dev clock): every device's round completed in both states, none cut off.
+    const aged = f.blackout.agedHub as { clock_ahead?: { offset_seconds: number }; clock_back?: { offset_seconds: number }; ahead?: Record<string, { hello: number; new_errors: string[]; thrown?: string }>; back?: Record<string, { hello: number; new_errors: string[]; thrown?: string }> } | undefined;
+    const bad = [...Object.entries(aged?.ahead ?? {}), ...Object.entries(aged?.back ?? {})].filter(([, r]) => r.new_errors.length > 0 || r.thrown);
+    t.ok(!!aged && (aged.clock_ahead?.offset_seconds ?? 0) >= 16 * 60 && aged.clock_back?.offset_seconds === 0 && Object.keys(aged.ahead ?? {}).length >= 6 && bad.length === 0, `the hub's clock ran ${aged?.clock_ahead?.offset_seconds} s ahead and back to 0: ${Object.keys(aged?.ahead ?? {}).length} devices synced in both states, no error`, `aged hub clock: ${aged ? JSON.stringify({ ahead: aged.clock_ahead, back: aged.clock_back, devices: Object.keys(aged.ahead ?? {}).length, bad }) : "step did not run"}`);
     var t13 = t.c;
   }
 
