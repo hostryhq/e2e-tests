@@ -212,8 +212,15 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
       const [jam] = await T.sendKot(cap.rt.ctx, t.checkId);
       f.kotsSentWhileCut.push(jam!);
       cap.rt.fakes.kitchen.failWith = undefined;
-      clock.minutes(1);
-      await cap.rt.fakes.hub.flush();
+      // The retry waits for the print queue's back-off on the DEVICE's clock. The virtual day is already held at its wall-clock lead (Clock), so a minute of
+      // virtual time is cut to nothing and the job never came due: run 5 read that as a handed-over ticket (T6, AAG-006) and it was this harness cap. The
+      // tablet's own clock is stepped forward for the retry (no sync, no op in the window) and back.
+      net.deviceSkew.set(cap.fx.name, 5 * 60_000);
+      try {
+        await cap.rt.fakes.hub.flush();
+      } finally {
+        net.deviceSkew.delete(cap.fx.name);
+      }
       tableChecks.push({ cap, checkId: t.checkId, seatingId: t.seatingId, tableId: "tb-8" });
     });
   }
