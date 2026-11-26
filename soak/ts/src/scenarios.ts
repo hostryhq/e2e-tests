@@ -137,7 +137,7 @@ export function tenderTotals(rows: TenderRow[]): Record<string, { paise: number;
  * The payment reached billing before its bill and the tender totals still equal the devices' (counted once). The report is billing's own
  * tender summary, which is what the owner reads; the stored payments of the bill are compared as well.
  */
-export function paymentFirstVerdict(a: ScenarioFacts, devicePayments: TenderRow[], report: TenderSummaryItem[], servicePaymentsOfBill: number, devicePaymentsOfBill: number): Verdict {
+export function paymentFirstVerdict(a: ScenarioFacts, devicePayments: TenderRow[], report: TenderSummaryItem[], servicePaymentsOfBill: number, devicePaymentsOfBill: number, unmatched: { ofThisPayment: ExceptionRow[]; openElsewhere: number } = { ofThisPayment: [], openElsewhere: 0 }): Verdict {
   const { v, check } = verdict();
   const pf = a.arrival?.paymentFirst;
   check(!!a.paymentFirst, "the script made a payment on a device other than the bill's issuer", "the payment-from-another-device scenario was not seeded (script step failed)");
@@ -151,6 +151,9 @@ export function paymentFirstVerdict(a: ScenarioFacts, devicePayments: TenderRow[
     check(d.paise === c.paise && d.count === c.count, `tender ${n}: ${d.paise} paise in ${d.count} payment(s) on both sides`, `tender ${n}: devices ${d.paise}/${d.count}, billing report ${c.paise}/${c.count}: a payment is counted ${c.paise > d.paise ? "more than once" : "less than once"}`);
   }
   check(servicePaymentsOfBill === devicePaymentsOfBill, `the bill's payments total ${devicePaymentsOfBill} paise on both sides`, `the bill's payments: devices ${devicePaymentsOfBill}, billing ${servicePaymentsOfBill}`);
+  // O2-22: a payment whose bill billing has not accepted is flagged `payment_unmatched` and the finding is CLEARED when the bill arrives; nothing else stays open.
+  check(unmatched.ofThisPayment.every((e) => !open(e)), `the payment's payment_unmatched (${unmatched.ofThisPayment.length} seen) is cleared now that its bill arrived`, `the payment's payment_unmatched is still open although its bill arrived: ${JSON.stringify(unmatched.ofThisPayment.map((e) => e.status))}`);
+  check(unmatched.openElsewhere === 0, "no other payment_unmatched is open (only the quarantined duplicate's, asserted by S5)", `${unmatched.openElsewhere} payment_unmatched exception(s) stay open on payments other than the quarantined duplicate's`);
   return v;
 }
 
@@ -231,7 +234,7 @@ export function zCoverageVerdict(s: ScenarioFacts, revisions: RevisionRow[], sum
  * The same number under a second bill id is refused as `duplicate_document` at the gateway, the first op keeps the number in billing; if
  * billing nevertheless holds both, it must say so with a duplicate exception.
  */
-export function duplicateDocumentVerdict(s: ScenarioFacts, gatewayRowsOfSecondOp: GatewayOpRow[], billing: { bills: Array<{ id: string; number: string }>; exceptions: ExceptionRow[]; secondBillPaymentIds: string[] }): Verdict {
+export function duplicateDocumentVerdict(s: ScenarioFacts, gatewayRowsOfSecondOp: GatewayOpRow[], billing: { bills: Array<{ id: string; number: string }>; exceptions: ExceptionRow[]; secondBillPaymentIds: string[]; paymentsSeparate: boolean; billingPaymentsOfSecondBill: number }): Verdict {
   const { v, check } = verdict();
   const d = s.dupNumber;
   if (!check(!!d, "the same number was issued under two bill ids", "the duplicate number was not seeded (script step failed)")) return v;
@@ -243,8 +246,13 @@ export function duplicateDocumentVerdict(s: ScenarioFacts, gatewayRowsOfSecondOp
   const firstKeeps = ids.length === 1 && ids[0] === d!.firstBillId;
   const bothButSaid = ids.length === 2 && ids.includes(d!.firstBillId) && ids.includes(d!.secondBillId) && dupExc.length >= 1;
   check(firstKeeps || bothButSaid, firstKeeps ? "billing kept the number with the first bill only" : "billing holds both bills and reports a duplicate exception", `billing holds ${ids.length} bill(s) with ${d!.number} (${JSON.stringify(ids.map((i) => (i === d!.firstBillId ? "first" : i === d!.secondBillId ? "second" : "other")))}) and ${dupExc.length} duplicate exception(s)`);
-  // F30 / O2-22: the quarantined bill's payments still reach billing. The money stays in the tender totals (the claims no longer exclude it) and billing
-  // says so: `payment_unmatched`, severity warning, open, on each such payment.
+  // F30 / O2-22: a quarantined bill's payments that are their own ops (print mode: Present, then the payment) still reach billing. The money stays in the
+  // tender totals (the claims do not exclude it) and billing says so: `payment_unmatched`, severity warning, open, on each such payment. In settle mode the
+  // payments are inside the quarantined finalize op: billing never receives them, so there is nothing to match (reported, not asserted away).
+  if (!billing.paymentsSeparate) {
+    check(billing.billingPaymentsOfSecondBill === 0, `settle mode: the ${billing.secondBillPaymentIds.length} payment(s) of the quarantined bill travelled inside its finalize op; billing holds none of them (no orphan to flag)`, `settle mode: billing holds ${billing.billingPaymentsOfSecondBill} payment(s) of the quarantined bill although they were inside the quarantined op`);
+    return v;
+  }
   check(billing.secondBillPaymentIds.length > 0, `${billing.secondBillPaymentIds.length} payment(s) were recorded on the second bill`, "the second bill carries no payment: the payment_unmatched check is not evidenced");
   for (const pid of billing.secondBillPaymentIds) {
     const un = billing.exceptions.filter((e) => e.kind === "payment_unmatched" && e.subject_id === pid);

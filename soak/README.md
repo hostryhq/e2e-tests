@@ -21,7 +21,7 @@ admin), `gw/` (soakgw: internet switch, wall clock, device tokens, epoch), `ts/`
 Real: identity, tenancy, admin, catalog, orders, billing, NATS and Postgres processes; **svc-sync's own `cmd/gateway`** with
 `SYNC_DIRECTORY=identity` (real identity and tenancy directory, op-signing key, outbox relay to NATS, erasure route); real
 device tokens (identity `createDeviceToken`), real PIN proofs verified by identity; the hub (svc-sync `cmd/hub`); client-core
-sync engine; app-restaurant 95f9aa1 domain code and runtime, built from the device's offline pack.
+sync engine; app-restaurant (as built, 3b80cb6 in run 6) domain code and runtime, built from the device's offline pack.
 
 Harness additions, each reported in the run reports (the list is also the findings that block a harness-free run):
 
@@ -42,15 +42,22 @@ Harness additions, each reported in the run reports (the list is also the findin
 4. No build-time rewrite remains (run 4): the app opens the outlet, brand and tenant streams from the pack. `vitest.config.ts` only defines the app's
    build-time constants (browser target; each runtime passes `target: native`).
 5. Configuration is published through legal routes (device config intents on the counter; cloud intents emitted by billing with its own key).
-6. **Workarounds for two product findings, each proved first and recorded in the result** (`f27`, README of run 5):
-   F26 `hub-activate.sh` makes the `dev` key file before activation (svc-sync `keyprotect.NewDev` uses a file it creates as raw bytes in that process and
-   as base64 text in the next, so such a hub cannot start); F27 after every hub start the harness first shows that a device's cached LAN session fails
-   with "hub certificate differs from the verified one" (client-core `LanTransport` keeps a session pinned to the old certificate after the hub's TLS key
-   changes at restart) and then drops every device's session, as a pack refresh would.
+6. **No workaround for a product finding remains (run 6).** F26 (`keyprotect.NewDev`, svc-sync c0499fa) and F27 (client-core `LanTransport` re-handshakes on a
+   changed hub certificate, a74d521) are fixed upstream: `hub-activate.sh` no longer makes the dev key file and the harness no longer drops any LAN session;
+   after every hub start it only observes one sync round per device (`hub_restarts` in the result: rounds failing with "certificate differs" must be 0).
 7. The real hub, gateway and identity run on wall time and cannot be set. `Clock.advance` therefore never takes the virtual day more than 5 minutes
    ahead of the wall clock (hours of the script collapse; the hybrid clock's counter still orders operations). **T13's stale blackout ticket needs a ticket
    older than 15 minutes and so cannot be produced** (T6 and T13 fail on that ticket, see the run report). `settle` waits on the wall clock for the hub's
    own timer. The S6 wait (2 min approval window plus 10 min grace on the gateway's own clock) is real time, `SOAK_APPROVAL_WINDOW_MS` (0 = not waited, S6 NOT RUN).
+
+Run 6 additions: the hub is started with `SYNC_HUB_DEV_CLOCK_ADDR=127.0.0.1:<hub port + 1000>` (`Ctl.hubClock`, loopback `/dev/clock`, dev only).
+`soakgw` is still used only for the internet switch, the gateway's wall clock (`/soak/now`; S6 still waits real time, nothing in the gateway can be set),
+the devices' bearer tokens and the restore epoch. T13/T6 stale ticket: the age of a KOT is judged by the **printing device's own clock** (client-core
+`PrintService`, 15 minutes), which neither hub nor cloud sets, so the harness steps the kitchen device's clock forward 25 minutes for the ingest of the
+handed-over and stale tickets (`SoakNet.deviceSkew`, no sync and no op in that window) and back for the recent one; the ages are measured and asserted. The hub's
+dev clock is exercised separately (`agedHubRounds`): 16 minutes ahead (past its 15-minute LAN session) with every device syncing, then back to wall time.
+S7 as built: a cashier re-bills a paid bill without approval and is refused (`approval_needed`); a manager re-bills citing another approver's approval and
+billing raises no `rebill_after_payment`. F30: the quarantined duplicate's payments stay in the tender totals and billing raises `payment_unmatched` (warning).
 
 T10 (run 4): `soak-onboard` creates two plans (`soak_full` with `restaurant.kds`, `soak_lite` without), puts the organisation on `soak_full`
 with a charge for a long-past period (overdue), and `-change-plan soak_lite -org <id>` changes the plan as the vendor does mid-day (`ts/src/t10.ts`).

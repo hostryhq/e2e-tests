@@ -84,6 +84,13 @@ describe("S1 payment arrives before its bill", () => {
   it("FAILS when the scenario was not seeded", () => {
     expect(paymentFirstVerdict(emptyScenarioFacts(), dev, report(25200, 25200), 0, 0).ok).toBe(false);
   });
+  it("passes when the payment's payment_unmatched was cleared at its bill's arrival, FAILS when it is still open or another one is", () => {
+    const cleared = { ofThisPayment: [{ kind: "payment_unmatched", subject_id: "p2", status: "resolved" }], openElsewhere: 0 };
+    expect(paymentFirstVerdict(seeded(true), dev, report(25200, 25200), 50400, 50400, cleared).ok).toBe(true);
+    const stuck = { ofThisPayment: [{ kind: "payment_unmatched", subject_id: "p2", status: "open" }], openElsewhere: 0 };
+    expect(fails(paymentFirstVerdict(seeded(true), dev, report(25200, 25200), 50400, 50400, stuck))).toMatch(/still open although its bill arrived/);
+    expect(fails(paymentFirstVerdict(seeded(true), dev, report(25200, 25200), 50400, 50400, { ofThisPayment: [], openElsewhere: 2 }))).toMatch(/2 payment_unmatched/);
+  });
   it("totals tenders per name", () => {
     expect(tenderTotals([...dev, { tender: "cash", amount_paise: 100 }])).toEqual({ cash: { paise: 25300, count: 2 }, upi: { paise: 25200, count: 1 } });
   });
@@ -188,7 +195,7 @@ describe("S5 duplicate invoice number", () => {
   s.dupNumber = { number: "AAA/2627/000042", firstBillId: "b1", secondBillId: "b2", secondOp: { origin: A, seq: 50 } };
   const refused = [{ status: "quarantined", reason: "duplicate_document", marks: "" }];
   const unmatched = { kind: "payment_unmatched", subject_id: "pay2-xxxxxxxx", status: "open", severity: "warning" };
-  const b = (over: Record<string, unknown>) => ({ bills: [{ id: "b1", number: "AAA/2627/000042" }], exceptions: [unmatched], secondBillPaymentIds: ["pay2-xxxxxxxx"], ...over }) as Parameters<typeof duplicateDocumentVerdict>[2];
+  const b = (over: Record<string, unknown>) => ({ bills: [{ id: "b1", number: "AAA/2627/000042" }], exceptions: [unmatched], secondBillPaymentIds: ["pay2-xxxxxxxx"], paymentsSeparate: true, billingPaymentsOfSecondBill: 1, ...over }) as Parameters<typeof duplicateDocumentVerdict>[2];
   it("passes when the gateway refuses the second op, billing keeps the number with the first bill and warns about the orphaned payment", () => {
     const v = duplicateDocumentVerdict(s, refused, b({}));
     expect(v.ok, fails(v)).toBe(true);
@@ -215,6 +222,11 @@ describe("S5 duplicate invoice number", () => {
     expect(duplicateDocumentVerdict(s, refused, b({ exceptions: [{ ...unmatched, status: "resolved" }] })).ok).toBe(false);
     expect(duplicateDocumentVerdict(s, refused, b({ exceptions: [{ ...unmatched, severity: "high" }] })).ok).toBe(false);
     expect(duplicateDocumentVerdict(s, refused, b({ exceptions: [{ ...unmatched, subject_id: "other" }] })).ok).toBe(false);
+  });
+  it("settle mode: the payments are inside the quarantined op, billing holds none and no exception is needed; FAILS if billing holds one", () => {
+    const m = { paymentsSeparate: false, billingPaymentsOfSecondBill: 0, exceptions: [] };
+    expect(duplicateDocumentVerdict(s, refused, b(m)).ok).toBe(true);
+    expect(duplicateDocumentVerdict(s, refused, b({ ...m, billingPaymentsOfSecondBill: 1 })).ok).toBe(false);
   });
   it("FAILS when the second bill carries no payment (the check would be vacuous)", () => {
     expect(fails(duplicateDocumentVerdict(s, refused, b({ secondBillPaymentIds: [], exceptions: [] })))).toMatch(/not evidenced/);

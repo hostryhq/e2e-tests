@@ -31,7 +31,7 @@ export async function scenarioClaims(i: Inputs): Promise<Claim[]> {
   const dupId = s.dupNumber?.secondBillId; // the seeded duplicate stays out of the generic totals; S5 judges it
   const bills = (await rows("bill")).filter((b) => b.id !== dupId);
   const notes = await rows("credit_note");
-  const pays = await rows("payment"); // F30: the quarantined duplicate's payments stay in the tender totals; S5 asserts billing's payment_unmatched
+  const pays = (await rows("payment")).filter((p) => f.mode === "print" || p.bill_id !== dupId); // F30: print mode keeps the quarantined duplicate's payments (own ops); settle mode's are inside the quarantined op
   const sBills = await svc.all("billing", "/v1/bills");
   const sNotes = await svc.all("billing", "/v1/credit-notes");
   const sPays = await svc.all("billing", "/v1/payments");
@@ -42,6 +42,7 @@ export async function scenarioClaims(i: Inputs): Promise<Claim[]> {
   const tender = await svc.all("billing", `/v1/reports/tender-summary?from=${date}&to=${date}`);
   const tax = await svc.all("billing", `/v1/reports/tax-summary?from=${date}&to=${date}`);
   const out: Claim[] = [];
+  const dupPayIds = new Set(((await rows("payment")) as R[]).filter((p) => p.bill_id === dupId).map((p) => String(p.id)));
 
   // S1 (H1)
   {
@@ -57,6 +58,10 @@ export async function scenarioClaims(i: Inputs): Promise<Claim[]> {
           tender as never,
           ofBill(sPays, (p) => p.amount.amount_paise),
           ofBill(pays, (p) => Number(p.amount_paise)),
+          {
+            ofThisPayment: bExc.filter((e) => e.kind === "payment_unmatched" && e.subject_id === pf?.paymentId),
+            openElsewhere: bExc.filter((e) => e.kind === "payment_unmatched" && (e.status ?? "open") === "open" && !dupPayIds.has(String(e.subject_id))).length,
+          },
         ),
       ),
     );
@@ -85,7 +90,7 @@ export async function scenarioClaims(i: Inputs): Promise<Claim[]> {
   // S5 (H5)
   {
     const d = s.dupNumber;
-    out.push(asClaim("S5", "Duplicate invoice number under two bill ids", duplicateDocumentVerdict(s, d ? gatewayRows(tenant, d.secondOp) : [], { bills: sBills.map((b) => ({ id: b.id, number: b.number })), exceptions: bExc, secondBillPaymentIds: pays.filter((p) => p.bill_id === d?.secondBillId).map((p) => String(p.id)) })));
+    out.push(asClaim("S5", "Duplicate invoice number under two bill ids", duplicateDocumentVerdict(s, d ? gatewayRows(tenant, d.secondOp) : [], { bills: sBills.map((b) => ({ id: b.id, number: b.number })), exceptions: bExc, paymentsSeparate: f.mode === "print", secondBillPaymentIds: ((await rows("payment")) as R[]).filter((p) => p.bill_id === d?.secondBillId).map((p) => String(p.id)), billingPaymentsOfSecondBill: sPays.filter((p) => p.bill_id === d?.secondBillId).length })));
   }
 
   // S6 (P2-H1): the gateway judges "missing" ApprovalMaxAge (120 s) plus ApprovalMissingGrace (10 min) after it stored the op, on its own WALL

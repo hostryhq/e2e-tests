@@ -84,7 +84,10 @@ export async function runDay(net: SoakNet, o: DayOpts): Promise<Facts> {
     if (o.mode === "print") {
       // number_at=print: Present finalises the invoice; the payment is recorded against it afterwards.
       const ops0 = d.opLog.length;
-      const p = await T.present(d.rt.ctx, checkId);
+      const p = await T.present(d.rt.ctx, checkId).catch((e: unknown) => {
+        f.scn.payCalls--; // a Present whose print failed (the wrong-tax step doctors the print's snapshot) is not a completed payment flow
+        throw e;
+      });
       if (p.kind !== "invoice") throw new Error("print mode: Present did not finalise the invoice");
       f.scn.presents.push({ checkId, billId: p.billId, number: p.number, opIntents: d.opLog.slice(ops0).map((o) => o.intent), paymentsAtPresent: list(d)("payment").filter((x) => (x as unknown as { bill_id: string }).bill_id === p.billId).length });
       await T.recordPayment(d.rt.ctx, p.billId, payments);

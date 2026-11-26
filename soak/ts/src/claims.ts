@@ -62,8 +62,10 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
   const dupNumber = f.scn.dupNumber?.number;
   const bills = ((await rowsOf(a07, "bill")) as unknown as BillRow[]).filter((b) => b.id !== dupSecond);
   const notes = (await rowsOf(a07, "credit_note")) as unknown as CreditNoteRow[];
-  // F30 / O2-22: the quarantined duplicate's payments stay in the tender totals (billing counts them and raises payment_unmatched, which S5 asserts).
-  const pays = await rowsOf(a07, "payment");
+  // F30 / O2-22: in print mode the quarantined duplicate's payments are their own ops: they reach billing, stay in the tender totals (both sides count them)
+  // and billing raises payment_unmatched (S5 asserts it). In settle mode they travel INSIDE the quarantined finalize op, so billing never receives them and the
+  // devices' side leaves them out (reported by S5 as an observation, not matched away).
+  const pays = (await rowsOf(a07, "payment")).filter((p) => f.mode === "print" || p.bill_id !== dupSecond);
   const refunds = await rowsOf(a07, "refund");
 
   // ---- services ----
@@ -337,7 +339,7 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
       const routed = /print|both/.test(stations.find((x) => x.code === k.station_code)?.output ?? "") && !noOriginal.has(k.id);
       return printed(k) !== (routed ? 1 : 0);
     });
-    t.ok(wrongKot.length === 0, `${kots.length} KOTs: each printed once as an original on its routed printer (stations that only show on the KDS print none; the handed-over and the stale blackout ticket print none)`, `${wrongKot.length} of ${kots.length} KOTs not printed the expected number of times (e.g. ${wrongKot.slice(0, 3).map((k) => `${k.kot_no}/${k.station_code}=${printed(k)}`).join(", ")})`);
+    t.ok(wrongKot.length === 0, `${kots.length} KOTs: each printed once as an original on its routed printer (stations that only show on the KDS print none; the handed-over and the stale blackout ticket print none)`, `${wrongKot.length} of ${kots.length} KOTs not printed the expected number of times (e.g. ${wrongKot.slice(0, 3).map((k) => `${k.kot_no}/${k.station_code}=${printed(k)}${k.id === f.blackout.given ? " [handed over]" : k.id === f.blackout.stale ? " [stale]" : k.id === f.blackout.recent ? " [recent]" : ""} ${JSON.stringify({ ...k, tenant_id: undefined }).slice(0, 500)} late on [${printers.filter((d) => d.rt.fakes.hub.lateTickets().some((x) => x.id === k.id)).map((d) => d.fx.name).join(",")}], any-copy prints ${kotPrints.filter((x) => x.includes(String(k.kot_no))).length}`).join(", ")})`);
     t.note("scope: the fake printers capture the ESC/POS bytes of the bill printer and the kitchen printer per device; counts are of decoded text matches on the document number");
     extra.printing = { billPrints: billPrints.length, kotPrints: kotPrints.length };
     var t6 = t.c;
@@ -515,7 +517,14 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
     const t = mk("T12", "Numbering trigger");
     const presents = await rowsOf(a07, "check_present");
     const checks = (await rowsOf(a07, "check")) as Array<{ id: string; status: string }>;
-    const billedChecks = new Set(bills.map((b) => (b as R).check_id).filter(Boolean));
+    // The seeded duplicate (S5) is a bill like any other on the devices (its number is the repeated one; read from the device that issued it), so its check is billed and its Present counts here;
+    // run 5 read this as "1 open check without a bill" and "38 flows against 37 Presents" and took it for a billing defect (F30): it was the harness leaving the
+    // duplicate's bill out of this claim.
+    // The device that issued the duplicate holds its bill; the other devices do not (their apply refuses the repeated number, see T7), so it is read from there.
+    const a07Bills = (await rowsOf(a07, "bill")) as unknown as BillRow[];
+    const dupRow = dupSecond && !a07Bills.some((b) => b.id === dupSecond) ? ((await rowsOf(by("A09"), "bill")) as unknown as BillRow[]).filter((b) => b.id === dupSecond) : [];
+    const allBills = [...a07Bills, ...dupRow];
+    const billedChecks = new Set(allBills.map((b) => (b as R).check_id).filter(Boolean));
     const cancels = new Set((await rowsOf(a07, "check_cancel")).map((c) => c.check_id));
     const presented = [...new Set(presents.map((p) => p.check_id))];
     if (f.mode === "settle") {
@@ -538,7 +547,7 @@ export async function evaluate(i: Inputs): Promise<{ claims: Claim[]; extra: R }
       const openChecks = checks.filter((x) => x.status === "open" && !billedChecks.has(x.id) && !cancels.has(x.id));
       t.ok(openChecks.length === 0, "no check is left open without a bill or a cancellation", `${openChecks.length} open check(s) without a bill`);
       // M5 (code review): the lines above also hold when the script never pressed Present. This is the evidence that can fail for the reason it names.
-      const pm = printModeVerdict(f.scn, own as unknown as Array<{ id: string; number: string; check_id?: string }>);
+      const pm = printModeVerdict(f.scn, allBills.filter((b) => (b as R).source_kind !== "manual_book") as unknown as Array<{ id: string; number: string; check_id?: string }>);
       for (const p of pm.pass) t.ok(true, p, "");
       for (const x of pm.fail) t.ok(false, "", x);
     }
