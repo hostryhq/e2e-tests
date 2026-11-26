@@ -1,0 +1,1769 @@
+{
+ "bill": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "bill_discount_kind": {
+    "pii": false
+   },
+   "bill_discount_value": {
+    "pii": false
+   },
+   "book_total_paise": {
+    "pii": false
+   },
+   "business_date": {
+    "pii": false
+   },
+   "calc_v": {
+    "pii": false
+   },
+   "cgst_paise": {
+    "pii": false
+   },
+   "check_id": {
+    "pii": false
+   },
+   "customer_gstin": {
+    "pii": true
+   },
+   "customer_name": {
+    "pii": true
+   },
+   "discount_paise": {
+    "pii": false
+   },
+   "doc_type": {
+    "pii": false
+   },
+   "eco": {
+    "pii": false
+   },
+   "financial_year": {
+    "pii": false
+   },
+   "gross_paise": {
+    "pii": false
+   },
+   "igst_paise": {
+    "pii": false
+   },
+   "invoice_date": {
+    "pii": false
+   },
+   "non_gst_subtotal_paise": {
+    "pii": false
+   },
+   "number": {
+    "pii": false
+   },
+   "order_type": {
+    "pii": false
+   },
+   "packing_charge_paise": {
+    "pii": false
+   },
+   "packing_tax_class": {
+    "pii": false
+   },
+   "price_mode": {
+    "pii": false
+   },
+   "rebill_group_id": {
+    "pii": false
+   },
+   "replaces_bill_id": {
+    "pii": false
+   },
+   "round_off": {
+    "pii": false
+   },
+   "round_off_paise": {
+    "pii": false
+   },
+   "ruleset_id": {
+    "pii": false
+   },
+   "series_code": {
+    "pii": false
+   },
+   "service_charge_bp": {
+    "pii": false
+   },
+   "service_charge_paise": {
+    "pii": false
+   },
+   "sgst_paise": {
+    "pii": false
+   },
+   "source_kind": {
+    "pii": false
+   },
+   "taxable_paise": {
+    "pii": false
+   },
+   "token_no": {
+    "pii": false
+   },
+   "total_paise": {
+    "pii": false
+   },
+   "waiter_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "bill_line": {
+  "day_parent": "bill_id",
+  "day_parent_ref": "bill",
+  "fields": {
+   "bill_discount_alloc_paise": {
+    "pii": false
+   },
+   "bill_id": {
+    "pii": false
+   },
+   "category_id": {
+    "pii": false
+   },
+   "category_name": {
+    "pii": false
+   },
+   "comp": {
+    "pii": false
+   },
+   "comp_value_paise": {
+    "pii": false
+   },
+   "hsn_sac": {
+    "pii": false
+   },
+   "item_id": {
+    "pii": false
+   },
+   "item_name": {
+    "pii": false
+   },
+   "line_discount_paise": {
+    "pii": false
+   },
+   "line_no": {
+    "pii": false
+   },
+   "modifier_delta_paise": {
+    "pii": false
+   },
+   "net_paise": {
+    "pii": false
+   },
+   "order_line_id": {
+    "pii": false
+   },
+   "qty_milli": {
+    "pii": false
+   },
+   "tax_class": {
+    "pii": false
+   },
+   "unit_price_paise": {
+    "pii": false
+   },
+   "variant_name": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "bill_reprint": {
+  "day_parent": "bill_id",
+  "day_parent_ref": "bill",
+  "fields": {
+   "bill_id": {
+    "pii": false
+   },
+   "copy_no": {
+    "pii": false
+   },
+   "mode": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "bill_request": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "check_id": {
+    "pii": false
+   },
+   "seating_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "orders"
+ },
+ "bill_tax_line": {
+  "day_parent": "bill_id",
+  "day_parent_ref": "bill",
+  "fields": {
+   "bill_id": {
+    "pii": false
+   },
+   "cgst_paise": {
+    "pii": false
+   },
+   "charge_alloc_paise": {
+    "pii": false
+   },
+   "gst_applies": {
+    "pii": false
+   },
+   "igst_paise": {
+    "pii": false
+   },
+   "rate_bp": {
+    "pii": false
+   },
+   "sgst_paise": {
+    "pii": false
+   },
+   "tax_class": {
+    "pii": false
+   },
+   "taxable_paise": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "billing_settings": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "comp_allowance_paise": {
+    "pii": false
+   },
+   "day_cutoff_minutes": {
+    "pii": false
+   },
+   "discount_limit_bp": {
+    "pii": false
+   },
+   "handover_count": {
+    "pii": false
+   },
+   "manual_entry_max_days_back": {
+    "pii": false
+   },
+   "number_at": {
+    "pii": false
+   },
+   "open_item_limit_paise": {
+    "pii": false
+   },
+   "packing_charge_paise": {
+    "pii": false
+   },
+   "packing_tax_class": {
+    "pii": false
+   },
+   "price_mode": {
+    "pii": false
+   },
+   "rebill_allowance_per_shift": {
+    "pii": false
+   },
+   "round_off": {
+    "pii": false
+   },
+   "service_charge_bp": {
+    "pii": false
+   },
+   "service_charge_counter": {
+    "pii": false
+   },
+   "service_charge_dine_in": {
+    "pii": false
+   },
+   "service_charge_takeaway": {
+    "pii": false
+   },
+   "shift_required": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "billing"
+ },
+ "business_day": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "business_date": {
+    "pii": false
+   },
+   "status": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "business_day_revision": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "bill_count": {
+    "pii": false
+   },
+   "business_day_id": {
+    "pii": false
+   },
+   "cause": {
+    "pii": false
+   },
+   "cgst_paise": {
+    "pii": false
+   },
+   "credit_note_count": {
+    "pii": false
+   },
+   "credit_note_total_paise": {
+    "pii": false
+   },
+   "discount_paise": {
+    "pii": false
+   },
+   "display_number": {
+    "pii": false
+   },
+   "gross_paise": {
+    "pii": false
+   },
+   "internal_consumption_paise": {
+    "pii": false
+   },
+   "net_paise": {
+    "pii": false
+   },
+   "non_gst_paise": {
+    "pii": false
+   },
+   "op_from_seq": {
+    "pii": false
+   },
+   "op_to_seq": {
+    "pii": false
+   },
+   "origin_device_id": {
+    "pii": false
+   },
+   "refund_total_paise": {
+    "pii": false
+   },
+   "revision": {
+    "pii": false
+   },
+   "round_off_paise": {
+    "pii": false
+   },
+   "series_ranges_json": {
+    "pii": false
+   },
+   "service_charge_paise": {
+    "pii": false
+   },
+   "sgst_paise": {
+    "pii": false
+   },
+   "tenders_json": {
+    "pii": false
+   },
+   "total_paise": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "billing"
+ },
+ "cash_event": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "amount_paise": {
+    "pii": false
+   },
+   "business_date": {
+    "pii": false
+   },
+   "kind": {
+    "pii": false
+   },
+   "note": {
+    "pii": false
+   },
+   "reason_code_id": {
+    "pii": false
+   },
+   "shift_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "category": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "default_station_code": {
+    "pii": false
+   },
+   "default_tax_class": {
+    "pii": false
+   },
+   "name_en": {
+    "pii": false
+   },
+   "name_ml": {
+    "pii": false
+   },
+   "name_ta": {
+    "pii": false
+   },
+   "sort_order": {
+    "pii": false
+   },
+   "status": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "check": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "bill_id": {
+    "pii": false
+   },
+   "business_date": {
+    "pii": false
+   },
+   "customer_gstin": {
+    "pii": true
+   },
+   "customer_name": {
+    "pii": true
+   },
+   "customer_phone": {
+    "pii": true
+   },
+   "discount_kind": {
+    "pii": false
+   },
+   "discount_reason_code_id": {
+    "pii": false
+   },
+   "discount_value": {
+    "pii": false
+   },
+   "eco_channel": {
+    "pii": false
+   },
+   "label": {
+    "pii": false
+   },
+   "order_type": {
+    "pii": false
+   },
+   "packing_charge_removed": {
+    "pii": false
+   },
+   "seating_id": {
+    "pii": false
+   },
+   "served_only": {
+    "pii": false
+   },
+   "service_charge_removed": {
+    "pii": false
+   },
+   "status": {
+    "pii": false
+   },
+   "token_no": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "check_cancel": {
+  "day_parent": "check_id",
+  "day_parent_ref": "check",
+  "fields": {
+   "approval_id": {
+    "pii": false
+   },
+   "check_id": {
+    "pii": false
+   },
+   "merged_into_check_id": {
+    "pii": false
+   },
+   "presented": {
+    "pii": false
+   },
+   "reason_code_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "check_present": {
+  "day_parent": "check_id",
+  "day_parent_ref": "check",
+  "fields": {
+   "check_id": {
+    "pii": false
+   },
+   "content_hash": {
+    "pii": false
+   },
+   "mode": {
+    "pii": false
+   },
+   "present_count": {
+    "pii": false
+   },
+   "total_paise": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "check_present_change": {
+  "day_parent": "check_id",
+  "day_parent_ref": "check",
+  "fields": {
+   "after_present_count": {
+    "pii": false
+   },
+   "change_kind": {
+    "pii": false
+   },
+   "check_id": {
+    "pii": false
+   },
+   "reason_code_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "credit_note": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "bill_id": {
+    "pii": false
+   },
+   "bill_invoice_date": {
+    "pii": false
+   },
+   "bill_number": {
+    "pii": false
+   },
+   "business_date": {
+    "pii": false
+   },
+   "calc_v": {
+    "pii": false
+   },
+   "customer_gstin": {
+    "pii": true
+   },
+   "customer_name": {
+    "pii": true
+   },
+   "financial_year": {
+    "pii": false
+   },
+   "invoice_date": {
+    "pii": false
+   },
+   "number": {
+    "pii": false
+   },
+   "reason_code_id": {
+    "pii": false
+   },
+   "rebill_group_id": {
+    "pii": false
+   },
+   "refund_tender": {
+    "pii": false
+   },
+   "replacement_total_paise": {
+    "pii": false
+   },
+   "round_off_paise": {
+    "pii": false
+   },
+   "ruleset_id": {
+    "pii": false
+   },
+   "series_code": {
+    "pii": false
+   },
+   "total_paise": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "credit_note_line": {
+  "day_parent": "credit_note_id",
+  "day_parent_ref": "credit_note",
+  "fields": {
+   "bill_line_id": {
+    "pii": false
+   },
+   "credit_note_id": {
+    "pii": false
+   },
+   "item_name": {
+    "pii": false
+   },
+   "line_no": {
+    "pii": false
+   },
+   "net_paise": {
+    "pii": false
+   },
+   "qty_milli": {
+    "pii": false
+   },
+   "tax_class": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "credit_note_tax_line": {
+  "day_parent": "credit_note_id",
+  "day_parent_ref": "credit_note",
+  "fields": {
+   "cgst_paise": {
+    "pii": false
+   },
+   "charge_alloc_paise": {
+    "pii": false
+   },
+   "credit_note_id": {
+    "pii": false
+   },
+   "gst_applies": {
+    "pii": false
+   },
+   "igst_paise": {
+    "pii": false
+   },
+   "rate_bp": {
+    "pii": false
+   },
+   "sgst_paise": {
+    "pii": false
+   },
+   "tax_class": {
+    "pii": false
+   },
+   "taxable_paise": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "day_close": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "bill_count": {
+    "pii": false
+   },
+   "business_day_id": {
+    "pii": false
+   },
+   "cgst_paise": {
+    "pii": false
+   },
+   "credit_note_count": {
+    "pii": false
+   },
+   "credit_note_total_paise": {
+    "pii": false
+   },
+   "cutoff": {
+    "pii": false
+   },
+   "cutoff_at": {
+    "pii": false
+   },
+   "discount_paise": {
+    "pii": false
+   },
+   "gross_paise": {
+    "pii": false
+   },
+   "internal_consumption_paise": {
+    "pii": false
+   },
+   "net_paise": {
+    "pii": false
+   },
+   "non_gst_paise": {
+    "pii": false
+   },
+   "refund_total_paise": {
+    "pii": false
+   },
+   "round_off_paise": {
+    "pii": false
+   },
+   "series_ranges_json": {
+    "pii": false
+   },
+   "service_charge_paise": {
+    "pii": false
+   },
+   "sgst_paise": {
+    "pii": false
+   },
+   "tenders_json": {
+    "pii": false
+   },
+   "total_paise": {
+    "pii": false
+   },
+   "z_number": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "billing"
+ },
+ "day_open": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "business_date": {
+    "pii": false
+   },
+   "business_day_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "dining_table": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "active": {
+    "pii": false
+   },
+   "floor_id": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   },
+   "seats": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "floor": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "name": {
+    "pii": false
+   },
+   "sort_order": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "internal_consumption": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "business_date": {
+    "pii": false
+   },
+   "check_id": {
+    "pii": false
+   },
+   "kind": {
+    "pii": false
+   },
+   "list_value_paise": {
+    "pii": false
+   },
+   "reason_code_id": {
+    "pii": false
+   },
+   "ref": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "item": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "category_id": {
+    "pii": false
+   },
+   "code": {
+    "pii": false
+   },
+   "kitchen_name": {
+    "pii": false
+   },
+   "name_en": {
+    "pii": false
+   },
+   "name_ml": {
+    "pii": false
+   },
+   "name_ta": {
+    "pii": false
+   },
+   "sort_order": {
+    "pii": false
+   },
+   "station_code": {
+    "pii": false
+   },
+   "status": {
+    "pii": false
+   },
+   "tax_class": {
+    "pii": false
+   },
+   "veg_mark": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "item_modifier_group": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "group_id": {
+    "pii": false
+   },
+   "item_id": {
+    "pii": false
+   },
+   "sort_order": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "item_outlet": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "available": {
+    "pii": false
+   },
+   "item_id": {
+    "pii": false
+   },
+   "outlet_price_paise": {
+    "pii": false
+   },
+   "outlet_price_variant_id": {
+    "pii": false
+   },
+   "quick_item": {
+    "pii": false
+   },
+   "quick_sort": {
+    "pii": false
+   },
+   "station_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "item_variant": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "is_default": {
+    "pii": false
+   },
+   "item_id": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   },
+   "sort_order": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "kot": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "business_date": {
+    "pii": false
+   },
+   "check_id": {
+    "pii": false
+   },
+   "kind": {
+    "pii": false
+   },
+   "kot_no": {
+    "pii": false
+   },
+   "order_id": {
+    "pii": false
+   },
+   "order_type": {
+    "pii": false
+   },
+   "recall_of_kot_id": {
+    "pii": false
+   },
+   "station_code": {
+    "pii": false
+   },
+   "table_name": {
+    "pii": false
+   },
+   "token_no": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "kot_handover": {
+  "day_parent": "kot_id",
+  "day_parent_ref": "kot",
+  "fields": {
+   "kot_id": {
+    "pii": false
+   },
+   "mode": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "kot_line": {
+  "day_parent": "kot_id",
+  "day_parent_ref": "kot",
+  "fields": {
+   "kot_id": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   },
+   "note": {
+    "pii": false
+   },
+   "order_line_id": {
+    "pii": false
+   },
+   "qty_milli": {
+    "pii": false
+   },
+   "status": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "kot_print": {
+  "day_parent": "kot_id",
+  "day_parent_ref": "kot",
+  "fields": {
+   "copy_no": {
+    "pii": false
+   },
+   "fallback": {
+    "pii": false
+   },
+   "kot_id": {
+    "pii": false
+   },
+   "printer_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "modifier": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "group_id": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   },
+   "price_delta_paise": {
+    "pii": false
+   },
+   "sort_order": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "modifier_group": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "max_select": {
+    "pii": false
+   },
+   "min_select": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "order": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "business_date": {
+    "pii": false
+   },
+   "order_type": {
+    "pii": false
+   },
+   "seating_id": {
+    "pii": false
+   },
+   "source": {
+    "pii": false
+   },
+   "token_no": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "order_line": {
+  "day_parent": "order_id",
+  "day_parent_ref": "order",
+  "fields": {
+   "category_id": {
+    "pii": false
+   },
+   "category_name": {
+    "pii": false
+   },
+   "check_id": {
+    "pii": false
+   },
+   "comp": {
+    "pii": false
+   },
+   "comp_reason_code_id": {
+    "pii": false
+   },
+   "discount_kind": {
+    "pii": false
+   },
+   "discount_reason_code_id": {
+    "pii": false
+   },
+   "discount_value": {
+    "pii": false
+   },
+   "hsn_sac": {
+    "pii": false
+   },
+   "item_id": {
+    "pii": false
+   },
+   "kitchen_name": {
+    "pii": false
+   },
+   "modifier_delta_paise": {
+    "pii": false
+   },
+   "modifiers_text": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   },
+   "note": {
+    "pii": false
+   },
+   "order_id": {
+    "pii": false
+   },
+   "qty_milli": {
+    "pii": false
+   },
+   "seat_no": {
+    "pii": false
+   },
+   "split_from_line_id": {
+    "pii": false
+   },
+   "state": {
+    "pii": false
+   },
+   "station_code": {
+    "pii": false
+   },
+   "tax_class": {
+    "pii": false
+   },
+   "unit_price_paise": {
+    "pii": false
+   },
+   "variant_id": {
+    "pii": false
+   },
+   "variant_name": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "order_line_cancel": {
+  "day_parent": "order_line_id",
+  "day_parent_ref": "order_line",
+  "fields": {
+   "approval_id": {
+    "pii": false
+   },
+   "kind": {
+    "pii": false
+   },
+   "kitchen_status_at_cancel": {
+    "pii": false
+   },
+   "kot_id": {
+    "pii": false
+   },
+   "order_line_id": {
+    "pii": false
+   },
+   "qty_milli": {
+    "pii": false
+   },
+   "reason_code_id": {
+    "pii": false
+   },
+   "wastage": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "order_line_modifier": {
+  "day_parent": "order_line_id",
+  "day_parent_ref": "order_line",
+  "fields": {
+   "modifier_id": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   },
+   "order_line_id": {
+    "pii": false
+   },
+   "price_delta_paise": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "outlet_power_profile": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "backup_minutes": {
+    "pii": false
+   },
+   "component": {
+    "pii": false
+   },
+   "power_backup": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "outlet_settings": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "cancel_grace_seconds": {
+    "pii": false
+   },
+   "covers_required": {
+    "pii": false
+   },
+   "idle_lock_seconds": {
+    "pii": false
+   },
+   "kds_amber_minutes": {
+    "pii": false
+   },
+   "kds_red_minutes": {
+    "pii": false
+   },
+   "kot_fallback_print": {
+    "pii": false
+   },
+   "kot_stale_after_seconds": {
+    "pii": false
+   },
+   "send_timeout_seconds": {
+    "pii": false
+   },
+   "served_default_counter": {
+    "pii": false
+   },
+   "soldout_resets_daily": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "outlet_tax_profile": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "financial_year": {
+    "pii": false
+   },
+   "fssai_number": {
+    "pii": false
+   },
+   "specified_premises": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "billing"
+ },
+ "payment": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "amount_paise": {
+    "pii": false
+   },
+   "bill_id": {
+    "pii": false
+   },
+   "business_date": {
+    "pii": false
+   },
+   "change_paise": {
+    "pii": false
+   },
+   "reference": {
+    "pii": false
+   },
+   "shift_id": {
+    "pii": false
+   },
+   "target_kind": {
+    "pii": false
+   },
+   "tender": {
+    "pii": false
+   },
+   "tender_name": {
+    "pii": false
+   },
+   "tendered_paise": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "price_entry": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "item_id": {
+    "pii": false
+   },
+   "price_paise": {
+    "pii": false
+   },
+   "variant_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "print_route": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "copies": {
+    "pii": false
+   },
+   "doc_type": {
+    "pii": false
+   },
+   "printer_id": {
+    "pii": false
+   },
+   "station_code": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "printer": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "address": {
+    "pii": false
+   },
+   "chars_per_line": {
+    "pii": false
+   },
+   "code_page": {
+    "pii": false
+   },
+   "connection": {
+    "pii": false
+   },
+   "cut": {
+    "pii": false
+   },
+   "drawer_pin": {
+    "pii": false
+   },
+   "host_device_id": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   },
+   "paper_width_mm": {
+    "pii": false
+   },
+   "port": {
+    "pii": false
+   },
+   "power_backup": {
+    "pii": false
+   },
+   "raster": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "reason_code": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "active": {
+    "pii": false
+   },
+   "label_key": {
+    "pii": false
+   },
+   "purpose": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "receipt_profile": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "address": {
+    "pii": false
+   },
+   "footer_text": {
+    "pii": false
+   },
+   "phone": {
+    "pii": false
+   },
+   "trade_name": {
+    "pii": false
+   },
+   "upi_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "refund": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "amount_paise": {
+    "pii": false
+   },
+   "bill_id": {
+    "pii": false
+   },
+   "business_date": {
+    "pii": false
+   },
+   "payment_id": {
+    "pii": false
+   },
+   "reason_code_id": {
+    "pii": false
+   },
+   "tender": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "seating": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "business_date": {
+    "pii": false
+   },
+   "covers": {
+    "pii": false
+   },
+   "guest_name": {
+    "pii": true
+   },
+   "status": {
+    "pii": false
+   },
+   "table_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "orders"
+ },
+ "seating_merge": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "absorbed_seating_id": {
+    "pii": false
+   },
+   "kept_seating_id": {
+    "pii": false
+   },
+   "kept_table_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "orders"
+ },
+ "seating_move": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "from_table_id": {
+    "pii": false
+   },
+   "seating_id": {
+    "pii": false
+   },
+   "to_table_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "orders"
+ },
+ "shift": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "business_date": {
+    "pii": false
+   },
+   "handover_from_shift_id": {
+    "pii": false
+   },
+   "opening_float_paise": {
+    "pii": false
+   },
+   "status": {
+    "pii": false
+   }
+  },
+  "has_business_date": true,
+  "outside_digest": false,
+  "owner": "billing"
+ },
+ "shift_close": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "counted_paise": {
+    "pii": false
+   },
+   "expected_paise": {
+    "pii": false
+   },
+   "force_closed": {
+    "pii": false
+   },
+   "handover_counted": {
+    "pii": false
+   },
+   "shift_id": {
+    "pii": false
+   },
+   "variance_paise": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "billing"
+ },
+ "station": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "cashier_copy": {
+    "pii": false
+   },
+   "code": {
+    "pii": false
+   },
+   "language": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   },
+   "output": {
+    "pii": false
+   },
+   "printer_id": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": false,
+  "owner": "catalog"
+ },
+ "tax_rule": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "cgst_bp": {
+    "pii": false
+   },
+   "doc_type": {
+    "pii": false
+   },
+   "gst_applies": {
+    "pii": false
+   },
+   "igst_bp": {
+    "pii": false
+   },
+   "order_channel": {
+    "pii": false
+   },
+   "regime": {
+    "pii": false
+   },
+   "rule_set_id": {
+    "pii": false
+   },
+   "sac": {
+    "pii": false
+   },
+   "sgst_bp": {
+    "pii": false
+   },
+   "specified_premises": {
+    "pii": false
+   },
+   "tax_class": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "billing"
+ },
+ "tax_rule_set": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "calc_v": {
+    "pii": false
+   },
+   "content_hash": {
+    "pii": false
+   },
+   "effective_date": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   },
+   "review_status": {
+    "pii": false
+   },
+   "version": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "billing"
+ },
+ "tender_kind": {
+  "day_parent": null,
+  "day_parent_ref": null,
+  "fields": {
+   "enabled": {
+    "pii": false
+   },
+   "kind": {
+    "pii": false
+   },
+   "name": {
+    "pii": false
+   }
+  },
+  "has_business_date": false,
+  "outside_digest": true,
+  "owner": "billing"
+ }
+}

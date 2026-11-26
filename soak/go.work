@@ -1,0 +1,10 @@
+go 1.27.1
+
+// The soak gateway builds against sibling checkouts on their feat/phase2-* branches, like infra/dev/up-full.sh
+// and svc-sync's own go.work (HOSTRY_REPOS_DIR layout: every repository next to e2e-tests).
+use (
+	./gw
+	../../svc-sync
+	../../go-common
+	../../go-auth
+)

@@ -1,0 +1,131 @@
+import { mk, type Claim, type Inputs } from "./claims";
+import { psql } from "./svc";
+import {
+  duplicateDocumentVerdict, expectedCreditTaxPaise, fakeApprovalVerdict, lateBeforeCloseVerdict, overCreditVerdict, paymentFirstVerdict, rebillAfterPaymentVerdict, zCoverageVerdict,
+  type GatewayOpRow, type OpRef, type Verdict,
+} from "./scenarios";
+
+type R = Record<string, any>;
+const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
+
+const asClaim = (id: string, name: string, v: Verdict, note?: string): Claim => {
+  const t = mk(id, name);
+  for (const p of v.pass) t.ok(true, p, "");
+  for (const f of v.fail) t.ok(false, "", f);
+  if (note) t.note(note);
+  return t.c;
+};
+
+const gatewayRows = (tenant: string, op: OpRef): GatewayOpRow[] =>
+  psql("sync", `select status, coalesce(reason,''), marks from ops where tenant_id='${tenant}' and origin='${op.origin}' and seq=${op.seq}`).map(([status, reason, marks]) => ({ status: status!, reason: reason ?? "", marks: marks ?? "" }));
+
+/**
+ * S1 to S7: the scenarios the first four soak runs never exercised (code review H1-H5, security review P2-H1, P2-H2). Each claim fails when its
+ * scenario was not seeded or its precondition (arrival order, clock skew, partition) was not reached: it is never passed by default.
+ */
+export async function scenarioClaims(i: Inputs): Promise<Claim[]> {
+  const { net, facts: f, svc, date, tenant } = i;
+  const s = f.scn;
+  const a07 = net.dev("A07");
+  const rows = async (e: string): Promise<R[]> => (await a07.rt.engine.rows(e)) as R[];
+  const dupId = s.dupNumber?.secondBillId; // the seeded duplicate stays out of the generic totals; S5 judges it
+  const bills = (await rows("bill")).filter((b) => b.id !== dupId);
+  const notes = await rows("credit_note");
+  const pays = (await rows("payment")).filter((p) => f.mode === "print" || p.bill_id !== dupId); // F30: print mode keeps the quarantined duplicate's payments (own ops); settle mode's are inside the quarantined op
+  const sBills = await svc.all("billing", "/v1/bills");
+  const sNotes = await svc.all("billing", "/v1/credit-notes");
+  const sPays = await svc.all("billing", "/v1/payments");
+  const bExc = await svc.all("billing", "/v1/exceptions");
+  const days = await svc.all("billing", "/v1/business-days");
+  const day = days.find((d) => d.business_date === date);
+  const revisions: R[] = day ? await svc.all("billing", `/v1/business-days/${day.id}/revisions`) : [];
+  const tender = await svc.all("billing", `/v1/reports/tender-summary?from=${date}&to=${date}`);
+  const tax = await svc.all("billing", `/v1/reports/tax-summary?from=${date}&to=${date}`);
+  const out: Claim[] = [];
+  const dupPayIds = new Set(((await rows("payment")) as R[]).filter((p) => p.bill_id === dupId).map((p) => String(p.id)));
+
+  // S1 (H1)
+  {
+    const pf = s.paymentFirst;
+    const ofBill = (xs: R[], k: (x: R) => number): number => sum(xs.filter((x) => x.bill_id === pf?.billId).map(k));
+    out.push(
+      asClaim(
+        "S1",
+        "Payment arrives before its bill",
+        paymentFirstVerdict(
+          s,
+          pays.map((p) => ({ tender: p.tender, amount_paise: Number(p.amount_paise) })),
+          tender as never,
+          ofBill(sPays, (p) => p.amount.amount_paise),
+          ofBill(pays, (p) => Number(p.amount_paise)),
+          {
+            ofThisPayment: bExc.filter((e) => e.kind === "payment_unmatched" && e.subject_id === pf?.paymentId),
+            openElsewhere: bExc.filter((e) => e.kind === "payment_unmatched" && (e.status ?? "open") === "open" && !dupPayIds.has(String(e.subject_id))).length,
+          },
+        ),
+      ),
+    );
+  }
+
+  // S2 (H2)
+  {
+    const reported = sum(tax.map((x) => Number(x.credit_cgst?.amount_paise ?? 0) + Number(x.credit_sgst?.amount_paise ?? 0)));
+    const expected = expectedCreditTaxPaise(
+      bills.map((b) => ({ id: b.id, total_paise: Number(b.total_paise), tax_paise: Number(b.cgst_paise ?? 0) + Number(b.sgst_paise ?? 0) })),
+      notes.map((n) => ({ bill_id: n.bill_id, total_paise: Number(n.total_paise) })),
+    );
+    const noteIds = sNotes.filter((n) => n.bill_id === s.doubleCredit?.billId).map((n) => n.id as string);
+    out.push(asClaim("S2", "Two tills credit the same bill", overCreditVerdict(s, noteIds, bExc, { reportedPaise: reported, expectedPaise: expected, notesInDay: notes.length })));
+  }
+
+  // S3 (H3)
+  out.push(asClaim("S3", "Late bill arrives before the day close", lateBeforeCloseVerdict(s, revisions as never), `arrival: ${JSON.stringify(s.arrival)}; billing day ${day?.status}, late_document_count ${day?.late_document_count}, revisions ${revisions.length}`));
+
+  // S4 (H4)
+  {
+    const revTotal = sum(revisions.map((r) => Number(r.added_totals?.total?.amount_paise ?? 0)));
+    out.push(asClaim("S4", "Fast-clock device, Z coverage by vector", zCoverageVerdict(s, revisions as never, { zTotalPaise: f.z?.totalPaise ?? NaN, revisionTotalPaise: revTotal, allBillsPaise: sum(bills.map((b) => Number(b.total_paise))) })));
+  }
+
+  // S5 (H5)
+  {
+    const d = s.dupNumber;
+    out.push(asClaim("S5", "Duplicate invoice number under two bill ids", duplicateDocumentVerdict(s, d ? gatewayRows(tenant, d.secondOp) : [], { bills: sBills.map((b) => ({ id: b.id, number: b.number })), exceptions: bExc, paymentsSeparate: f.mode === "print", secondBillPaymentIds: ((await rows("payment")) as R[]).filter((p) => p.bill_id === d?.secondBillId).map((p) => String(p.id)), billingPaymentsOfSecondBill: sPays.filter((p) => p.bill_id === d?.secondBillId).length })));
+  }
+
+  // S6 (P2-H1): the gateway judges "missing" ApprovalMaxAge (120 s) plus ApprovalMissingGrace (10 min) after it stored the op, on its own WALL
+  // clock. Nothing in the real gateway can be set, so the harness waits that long in real time (SOAK_APPROVAL_WINDOW_MS, default 16 min), polling
+  // until the op is flagged. A seed run with SOAK_APPROVAL_WINDOW_MS=0 does not wait: S6 is then recorded as not run, with what the op shows now.
+  {
+    const fa = s.fakeApproval;
+    let rowsOf: GatewayOpRow[] = [];
+    const windowMs = Number(process.env.SOAK_APPROVAL_WINDOW_MS ?? 960_000);
+    if (fa) {
+      const end = Date.now() + windowMs;
+      for (;;) {
+        rowsOf = gatewayRows(tenant, fa.op);
+        if (rowsOf.some((r) => r.marks.includes("approval_flag")) || Date.now() >= end) break;
+        await new Promise((r) => setTimeout(r, 5_000));
+      }
+    }
+    if (windowMs === 0) {
+      out.push({ id: "S6", name: "Override citing a non-existent approval", status: "not_run", evidence: [`not waited in this seed (SOAK_APPROVAL_WINDOW_MS=0); at the end of the run the gateway shows the op as ${rowsOf[0] ? `${rowsOf[0].status} [${rowsOf[0].marks}]` : "absent"}`], failures: [] });
+    } else out.push(asClaim("S6", "Override citing a non-existent approval", fakeApprovalVerdict(s, rowsOf)));
+  }
+
+  // S7 (P2-H2)
+  {
+    const r = s.rebillPaid;
+    const ids = [
+      r?.billId,
+      ...(r?.approved ? sNotes.filter((n) => n.number === r.approved!.creditNumber).map((n) => n.id as string) : []),
+      ...(r?.approved?.replacementNumbers ?? []).flatMap((num) => sBills.filter((b) => b.number === num).map((b) => b.id as string)),
+    ].filter((x): x is string => !!x);
+    const known = {
+      credit: !!r?.approved && sNotes.some((n) => n.number === r.approved!.creditNumber),
+      replacements: (r?.approved?.replacementNumbers ?? []).filter((num) => sBills.some((b) => b.number === num)).length,
+    };
+    out.push(asClaim("S7", "Re-bill of a paid bill: cashier refused, manager with another approver's approval accepted", rebillAfterPaymentVerdict(s, bExc, ids, known)));
+  }
+  return out;
+}
