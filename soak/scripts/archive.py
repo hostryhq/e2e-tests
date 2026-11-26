@@ -41,7 +41,7 @@ def main():
     skipped = sum(1 for c in claims if c["status"] == "not_run")
     status = "pass" if failed == 0 and skipped == 0 else ("fail" if failed else "partial")
     st = datetime.datetime.fromisoformat(a.started.replace("Z", "+00:00"))
-    primary = commits["e2e-tests"]
+    primary = commits["e2e-tests"]["sha"] if isinstance(commits["e2e-tests"], dict) else commits["e2e-tests"]
     run_id = f"{st:%H%M%S}-e2e-{short(primary)}"
     day = f"{st:%Y-%m-%d}"
     rel = f"runs/{st:%Y}/{day}/{run_id}"
@@ -77,7 +77,7 @@ def main():
         "command": a.command,
         "seed": r["seed"],
         "number_at": r["mode"],
-        "counts_are": "claims (T1 to T13 plus X1 no duplicate ops, X2 erasure, X3 cloud restore); skipped = not run",
+        "counts_are": "claims (T1 to T13, X1 no duplicate ops, X2 erasure, X3 cloud restore, S1 to S7 review scenarios); skipped = not run",
         "claims": {c["id"]: c["status"] for c in claims},
         "report": f"{rel}/report.md",
     }
@@ -143,7 +143,7 @@ def main():
 
     idx = os.path.join(a.repo, "INDEX.md")
     lines = open(idx).read().split("\n")
-    entry = f"- {day} {run_id} | e2e | soak {a.label}{' (' + a.variant + ')' if a.variant else ''} | {status} | pass {passed} fail {failed} skip {skipped} | R11 soak T1-T13 | {rel}/report.md"
+    entry = f"- {day} {run_id} | e2e | soak {a.label}{' (' + a.variant + ')' if a.variant else ''} | {status} | pass {passed} fail {failed} skip {skipped} | R11 soak T1-T13, X1-X3, S1-S7 | {rel}/report.md"
     at = next(i for i, l in enumerate(lines) if l.startswith("- "))
     lines.insert(at, entry)
     open(idx, "w").write("\n".join(lines))
